@@ -384,8 +384,36 @@
     .map-toolbar span { font-size: 12px; font-weight: 600; color: var(--muted); }
     .map-toolbar-links { display: flex; gap: 8px; flex-wrap: wrap; }
     #leaflet-map { height: 300px; width: 100%; background: #0d0f14; }
-    /* Dark leaflet tiles */
-    .leaflet-tile { filter: brightness(0.85) saturate(0.9); }
+    /* ── Step cards (live progress) ── */
+    .loading-steps { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+    .step-card {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; font-size: 13px; color: var(--muted);
+      transition: all 0.3s ease;
+    }
+    .step-card.running {
+      border-color: var(--accent);
+      color: var(--text);
+      background: rgba(79,140,255,0.08);
+    }
+    .step-card.done {
+      border-color: var(--green);
+      color: var(--text);
+      background: rgba(34,197,94,0.07);
+    }
+    .step-card.error { border-color: var(--red); }
+    .step-icon { font-size: 18px; flex-shrink: 0; }
+    .step-label { flex: 1; }
+    .step-status { font-size: 11px; flex-shrink: 0; font-weight: 600; }
+    .step-status.spinning::after {
+      content: ''; display: inline-block; width: 12px; height: 12px;
+      border: 2px solid var(--accent); border-top-color: transparent;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -417,13 +445,29 @@
     </div>
   </div>
 
-  <!-- Loading -->
+  <!-- Loading / Live Progress Panel -->
   <div class="loading" id="loading">
-    <div class="spinner"></div>
-    <div class="loading-steps">
-      <div class="step" id="step-1">🗺 Đang geocode địa chỉ...</div>
-      <div class="step" id="step-2">🤖 Gemini đang tìm kiếm thông tin...</div>
-      <div class="step" id="step-3">✨ Đang tổng hợp kết quả...</div>
+    <div class="loading-steps" id="live-steps">
+      <div class="step-card" id="sc-step-0">
+        <span class="step-icon">📍</span>
+        <span class="step-label">Geocoding địa chỉ...</span>
+        <span class="step-status"></span>
+      </div>
+      <div class="step-card" id="sc-step-1">
+        <span class="step-icon">🕐</span>
+        <span class="step-label">Tìm giờ mở cửa, danh mục và website...</span>
+        <span class="step-status"></span>
+      </div>
+      <div class="step-card" id="sc-step-2">
+        <span class="step-icon">📅</span>
+        <span class="step-label">Tìm ngày khai trương...</span>
+        <span class="step-status"></span>
+      </div>
+      <div class="step-card" id="sc-step-3">
+        <span class="step-icon">🏬</span>
+        <span class="step-label">Kiểm tra Shopping Center...</span>
+        <span class="step-status"></span>
+      </div>
     </div>
   </div>
 
@@ -648,38 +692,99 @@
     });
   });
 
-  // ── Main lookup ────────────────────────────────────────────────────────────
-  async function lookupPOI() {
+  // ── Main lookup via SSE ────────────────────────────────────────────────────
+  let activeSource = null;
+
+  function lookupPOI() {
     const name    = document.getElementById('poi-name').value.trim();
     const address = document.getElementById('poi-address').value.trim();
+    if (!name || !address) { document.getElementById('poi-name').focus(); return; }
 
-    if (!name || !address) {
-      document.getElementById('poi-name').focus();
-      return;
-    }
+    // Đóng stream cũ nếu đang chạy
+    if (activeSource) { activeSource.close(); activeSource = null; }
 
     setLoading(true);
     hideResults();
     hideError();
+    resetStepCards();
 
-    try {
-      const res = await fetch('/api/lookup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, address }),
-      });
+    const params = new URLSearchParams({ name, address });
+    const evtSource = new EventSource(`/api/lookup/stream?${params}`);
+    activeSource = evtSource;
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Server error');
+    evtSource.onmessage = (e) => {
+      let data;
+      try { data = JSON.parse(e.data); } catch { return; }
+
+      if (data.step === 'final') {
+        // Kết quả hoàn tất
+        evtSource.close();
+        activeSource = null;
+        setLoading(false);
+        currentData = data.data;
+        renderResults(currentData);
+        return;
       }
 
-      currentData = await res.json();
-      renderResults(currentData);
-    } catch (e) {
-      showError(e.message);
-    } finally {
+      const stepNum = data.step;  // 0, 1, 2, 3
+      if (data.status === 'running') {
+        updateStepCard(stepNum, 'running', data.label);
+      } else if (data.status === 'done') {
+        updateStepCard(stepNum, 'done', data.label);
+        // Cập nhật partial data ngay vào currentData
+        if (data.partial) {
+          currentData = { ...(currentData || {}), ...data.partial };
+          applyPartialUpdate(data.partial);
+        }
+      } else if (data.status === 'error') {
+        updateStepCard(stepNum, 'error', data.label);
+      }
+    };
+
+    evtSource.onerror = (e) => {
+      evtSource.close();
+      activeSource = null;
       setLoading(false);
+      showError('Kết nối bị ngắt. Thử lại.');
+    };
+  }
+
+  // Cập nhật UI ngay khi nhận partial data (không cần đợi xong hết)
+  function applyPartialUpdate(partial) {
+    if (!partial) return;
+    // Opening Hours
+    if (partial.opening_hours !== undefined) {
+      document.getElementById('res-oh-display').textContent =
+        formatHours(partial.opening_hours) || '(không tìm thấy)';
+    }
+    if (partial.opening_hours_source !== undefined)
+      setSource('res-oh-source', partial.opening_hours_source);
+    // Opening Date
+    if (partial.opening_date !== undefined)
+      document.getElementById('res-od').textContent = partial.opening_date || '(không tìm thấy)';
+    if (partial.opening_date_confidence)
+      setConfidenceBadge('res-od-confidence', partial.opening_date_confidence);
+    if (partial.opening_date_source !== undefined)
+      setSource('res-od-source', partial.opening_date_source);
+    // Category
+    if (partial.category)
+      document.getElementById('category-badge').textContent = partial.category;
+    // Shopping Center
+    if (partial.is_in_shopping_center !== undefined && partial.shopping_center_name) {
+      document.getElementById('res-sc-name').textContent = partial.shopping_center_name;
+      document.getElementById('sc-row').style.display = 'flex';
+    }
+    if (partial.site_plan_url) {
+      const sp = document.getElementById('res-site-plan');
+      sp.href = partial.site_plan_url;
+      sp.textContent = truncate(partial.site_plan_url, 80);
+      document.getElementById('site-plan-row').style.display = 'flex';
+    }
+    // Map (geo from step 0)
+    if (partial.lat && partial.lon && !currentData?.lat) {
+      initMap(partial.lat, partial.lon, document.getElementById('poi-name').value);
+      const osmLink = document.getElementById('osm-link');
+      osmLink.href = `https://www.openstreetmap.org/?mlat=${partial.lat}&mlon=${partial.lon}#map=18/${partial.lat}/${partial.lon}`;
     }
   }
 
@@ -687,24 +792,40 @@
   function setLoading(active) {
     const btn     = document.getElementById('lookup-btn');
     const loading = document.getElementById('loading');
-    const steps   = ['step-1', 'step-2', 'step-3'];
-
     btn.disabled = active;
     document.getElementById('btn-text').textContent = active ? 'Đang tìm kiếm...' : 'Tra cứu thông tin';
     loading.classList.toggle('active', active);
+  }
 
-    if (active) {
-      steps.forEach(s => document.getElementById(s).className = 'step');
-      // Animate steps
-      setTimeout(() => document.getElementById('step-1').classList.add('active'), 200);
-      setTimeout(() => {
-        document.getElementById('step-1').classList.replace('active', 'done');
-        document.getElementById('step-2').classList.add('active');
-      }, 1500);
-      setTimeout(() => {
-        document.getElementById('step-2').classList.replace('active', 'done');
-        document.getElementById('step-3').classList.add('active');
-      }, 5000);
+  function resetStepCards() {
+    [0,1,2,3].forEach(i => {
+      const card = document.getElementById(`sc-step-${i}`);
+      if (!card) return;
+      card.className = 'step-card';
+      const statusEl = card.querySelector('.step-status');
+      statusEl.textContent = '';
+      statusEl.className = 'step-status';
+      statusEl.style.color = '';
+    });
+  }
+
+  function updateStepCard(stepNum, status, label) {
+    const card = document.getElementById(`sc-step-${stepNum}`);
+    if (!card) return;
+    card.className = `step-card ${status}`;
+    if (label) card.querySelector('.step-label').textContent = label;
+    const statusEl = card.querySelector('.step-status');
+    if (status === 'running') {
+      statusEl.textContent = '';
+      statusEl.className = 'step-status spinning';
+    } else if (status === 'done') {
+      statusEl.textContent = '✓ Xong';
+      statusEl.className = 'step-status';
+      statusEl.style.color = 'var(--green)';
+    } else if (status === 'error') {
+      statusEl.textContent = '⚠ Lỗi';
+      statusEl.className = 'step-status';
+      statusEl.style.color = 'var(--red)';
     }
   }
 
