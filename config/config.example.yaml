@@ -1,0 +1,42 @@
+# AutoPOI — Config Template
+# Copy file này thành config.yaml và điền thông tin thực tế
+# KHÔNG commit config.yaml lên git (đã có trong .gitignore)
+
+google:
+  places_api_key: "YOUR_GOOGLE_PLACES_API_KEY"
+  # Đăng ký tại: https://console.cloud.google.com
+  # Free tier: $200 credit/tháng ≈ 5,800 POI miễn phí
+
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY"
+  model: "gemini-2.0-flash"
+  # Đăng ký tại: https://aistudio.google.com
+  # Free tier: đủ dùng cho quy mô 560 POI/tháng
+
+jira:
+  url: "https://COMPANY.atlassian.net"  # cập nhật sau khi có access
+  username: "your@email.com"
+  api_token: "YOUR_JIRA_API_TOKEN"      # tạo tại: Account Settings → Security
+  project_key: "POID"                   # cập nhật sau khi có access
+
+venue_editor:
+  url: "https://..."                    # cập nhật sau khi có access
+  username: "your@email.com"
+  password: "YOUR_VE_PASSWORD"
+  api_key: ""                           # điền nếu VE có API key
+
+pipeline:
+  parallel_jobs: 3          # Số job chạy song song (tăng dần sau test)
+  delay_between_actions: 2.5  # Giây delay giữa các thao tác (tránh bot detection)
+  delay_between_jobs: 5.0    # Giây delay giữa các job
+  max_retries: 3
+  retry_delay: 30            # Giây chờ trước khi retry
+
+osm:
+  overpass_url: "https://overpass-api.de/api/interpreter"  # Free
+  timeout: 30
+
+logging:
+  level: "INFO"              # DEBUG / INFO / WARNING / ERROR
+  file: "logs/autopoi.log"
+  max_size_mb: 50

@@ -1,0 +1,35 @@
+# AutoPOI .gitignore
+
+# Config chứa API keys — không commit
+config/config.yaml
+
+# Logs
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Database
+*.db
+*.sqlite
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshots tạm thời
+screenshots/
