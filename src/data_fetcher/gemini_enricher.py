@@ -58,11 +58,59 @@ def enrich_poi(model_tuple, name: str, address: str) -> dict:
         )
         raw_text = response.text
         logger.debug(f"Gemini raw response:\n{raw_text}")
-        return _parse_response(raw_text)
+
+        result = _parse_response(raw_text)
+
+        # Lấy URL thực tế từ grounding metadata (Google Search)
+        grounding_urls = _extract_grounding_urls(response)
+        logger.debug(f"Grounding URLs: {grounding_urls}")
+
+        # Gán source URL từ grounding thực tế
+        if grounding_urls:
+            result["grounding_urls"] = grounding_urls
+            # Tìm URL phù hợp cho OH, OD, CD bằng keyword matching
+            result["opening_hours_source"] = _find_source(grounding_urls, ["hour", "schedule", "time", "open", "location", "store"])
+            result["opening_date_source"]  = _find_source(grounding_urls, ["open", "grand", "new", "launch", "yelp", "facebook", "news"])
+            if result["is_closed"]:
+                result["closing_date_source"] = _find_source(grounding_urls, ["clos", "shut", "bankrupt", "perma"])
+        else:
+            result["grounding_urls"] = []
+
+        return result
 
     except Exception as e:
         logger.error(f"Gemini enrichment error: {e}")
         return _empty_result(f"Error: {e}")
+
+
+def _extract_grounding_urls(response) -> list:
+    """Lấy danh sách URL thực sự từ Google Search grounding metadata."""
+    urls = []
+    try:
+        for candidate in response.candidates:
+            meta = getattr(candidate, "grounding_metadata", None)
+            if not meta:
+                continue
+            chunks = getattr(meta, "grounding_chunks", []) or []
+            for chunk in chunks:
+                web = getattr(chunk, "web", None)
+                if web and getattr(web, "uri", None):
+                    uri = web.uri
+                    if uri not in urls:
+                        urls.append(uri)
+    except Exception as e:
+        logger.warning(f"Could not extract grounding URLs: {e}")
+    return urls
+
+
+def _find_source(urls: list, keywords: list) -> str:
+    """Tìm URL phù hợp nhất trong danh sách grounding URLs theo keywords."""
+    for url in urls:
+        url_lower = url.lower()
+        if any(kw in url_lower for kw in keywords):
+            return url
+    # Fallback: URL đầu tiên nếu không match
+    return urls[0] if urls else ""
 
 
 def _build_prompt(name: str, address: str) -> str:
@@ -76,14 +124,11 @@ Search the web and return ONLY a JSON object with exactly these fields:
 
 {{
   "opening_hours": "VE format string, e.g. 'mo 09:00-21:00; tu-fr 09:00-22:00; sa 10:00-20:00; su 11:00-18:00'",
-  "opening_hours_source": "URL where you found the hours",
-  "opening_date": "YYYY-MM-DD or YYYY-MM or YYYY (when this location first opened)",
-  "opening_date_source": "URL where you found the opening date",
   "is_closed": false,
   "closing_date": null,
-  "closing_date_source": null,
   "category": "business category e.g. 'Auto Service', 'Pet Store', 'Home Goods', etc.",
   "status_note": "any important notes about the business status",
+  "opening_date": "YYYY-MM-DD or YYYY-MM or YYYY (when this location first opened, NOT the chain)",
   "is_in_shopping_center": false,
   "shopping_center_name": null,
   "site_plan_url": null
@@ -91,15 +136,13 @@ Search the web and return ONLY a JSON object with exactly these fields:
 
 Rules:
 - opening_hours: Use format "mo" "tu" "we" "th" "fr" "sa" "su". Use ranges like "mo-fr". Time in 24h HH:MM.
-- opening_date: Search news, Yelp reviews, Facebook posts for grand opening. Use earliest evidence.
+- opening_date: Search news, Yelp first reviews, Facebook posts for grand opening of THIS specific location.
 - If business is permanently closed, set is_closed=true and provide closing_date.
 - is_in_shopping_center: true if this store is inside a mall, strip mall, or shopping center.
-- shopping_center_name: name of the shopping center if applicable (e.g. "Deer Park Town Center").
-- site_plan_url: Search for a site plan / leasing map / floor directory of the shopping center.
-  Search: "[shopping center name] site plan", "[shopping center name] leasing map",
-  "[shopping center name] floor directory", "[address] site plan".
-  Look on: the SC official website, LoopNet, CBRE, JLL, CoStar, retailsitesusa.com.
-  Return a direct URL to a PDF, image, or webpage showing the floor plan. null if not found.
+- shopping_center_name: name of the shopping center if applicable.
+- site_plan_url: Search "[shopping center name] site plan" on LoopNet, CBRE, JLL, CoStar.
+  Return a direct link to a PDF or page with the floor plan. null if not found.
+- DO NOT invent or construct URLs. Only use data you actually found.
 - Return ONLY the JSON, no other text.
 """.strip()
 
@@ -114,20 +157,20 @@ def _parse_response(text: str) -> dict:
 
     try:
         data = json.loads(json_match.group())
-        # Validate và normalize
         return {
             "opening_hours": data.get("opening_hours", ""),
-            "opening_hours_source": data.get("opening_hours_source", ""),
+            "opening_hours_source": "",   # populated from grounding metadata
             "opening_date": data.get("opening_date", ""),
-            "opening_date_source": data.get("opening_date_source", ""),
+            "opening_date_source": "",    # populated from grounding metadata
             "is_closed": bool(data.get("is_closed", False)),
             "closing_date": data.get("closing_date"),
-            "closing_date_source": data.get("closing_date_source"),
+            "closing_date_source": "",    # populated from grounding metadata
             "category": data.get("category", ""),
             "status_note": data.get("status_note", ""),
             "is_in_shopping_center": bool(data.get("is_in_shopping_center", False)),
             "shopping_center_name": data.get("shopping_center_name"),
             "site_plan_url": data.get("site_plan_url"),
+            "grounding_urls": [],
         }
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}\nText: {text[:500]}")
@@ -142,12 +185,13 @@ def _empty_result(note: str = "") -> dict:
         "opening_date_source": "",
         "is_closed": False,
         "closing_date": None,
-        "closing_date_source": None,
+        "closing_date_source": "",
         "category": "",
         "status_note": note,
         "is_in_shopping_center": False,
         "shopping_center_name": None,
         "site_plan_url": None,
+        "grounding_urls": [],
     }
 
 
