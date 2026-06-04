@@ -520,6 +520,26 @@
           <div class="data-label">Ghi chú</div>
           <div class="data-value" id="res-note" style="color:var(--muted);font-size:13px;"></div>
         </div>
+
+        <div class="data-row" id="sc-row" style="display:none;">
+          <div class="data-icon">🏬</div>
+          <div class="data-label">Shopping Center</div>
+          <div class="data-value">
+            <div id="res-sc-name" style="font-weight:600;color:var(--yellow);"></div>
+          </div>
+        </div>
+
+        <div class="data-row" id="site-plan-row" style="display:none;">
+          <div class="data-icon">🗺</div>
+          <div class="data-label">Site Plan</div>
+          <div class="data-value">
+            <a id="res-site-plan" href="#" target="_blank"
+              style="color:var(--accent);font-size:13px;word-break:break-all;"></a>
+            <div style="display:flex;gap:8px;margin-top:6px;">
+              <button class="btn btn-copy" onclick="copyText(document.getElementById('res-site-plan').href, this)">Copy URL</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -785,6 +805,26 @@
       tagCdRow.style.display     = 'none';
     }
 
+    // Shopping Center + Site Plan
+    const scRow       = document.getElementById('sc-row');
+    const sitePlanRow = document.getElementById('site-plan-row');
+
+    if (d.is_in_shopping_center && d.shopping_center_name) {
+      document.getElementById('res-sc-name').textContent = d.shopping_center_name;
+      scRow.style.display = 'flex';
+    } else {
+      scRow.style.display = 'none';
+    }
+
+    if (d.site_plan_url) {
+      const sp = document.getElementById('res-site-plan');
+      sp.href        = d.site_plan_url;
+      sp.textContent = truncate(d.site_plan_url, 80);
+      sitePlanRow.style.display = 'flex';
+    } else {
+      sitePlanRow.style.display = 'none';
+    }
+
     document.getElementById('results').classList.add('visible');
 
     // Comment gợi ý
@@ -1031,6 +1071,17 @@
     if (d.status_note) {
       lines.push('');
       lines.push(`[Note] ${d.status_note}`);
+    }
+
+    // Shopping Center + Site Plan
+    if (d.is_in_shopping_center) {
+      lines.push('');
+      lines.push(`[Shopping Center] ${d.shopping_center_name || 'Yes (name unknown)'}`);
+      if (d.site_plan_url) {
+        lines.push(`[Site Plan] ${d.site_plan_url}`);
+      } else {
+        lines.push(`[Site Plan] (not found - search manually on LoopNet/CBRE)`);
+      }
     }
 
     document.getElementById('comment-text').value = lines.join('\n');

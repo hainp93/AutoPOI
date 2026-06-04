@@ -6,6 +6,8 @@ Dùng Gemini API (với Google Search grounding) để tìm:
   - Closing Date (nếu đã đóng cửa)
   - Category (loại địa điểm)
   - Trạng thái: còn hoạt động hay đã đóng?
+  - Site Plan URL (nếu trong Shopping Center)
+  - is_in_shopping_center: có trong SC không
 """
 
 import json
@@ -39,6 +41,9 @@ def enrich_poi(model_tuple, name: str, address: str) -> dict:
           - closing_date_source: str | None
           - category: str (tên category tiếng Anh)
           - status_note: str (ghi chú thêm)
+          - is_in_shopping_center: bool
+          - shopping_center_name: str | None
+          - site_plan_url: str | None (link PDF/image mặt bằng SC)
     """
     client, model_name = model_tuple
     prompt = _build_prompt(name, address)
@@ -78,13 +83,23 @@ Search the web and return ONLY a JSON object with exactly these fields:
   "closing_date": null,
   "closing_date_source": null,
   "category": "business category e.g. 'Auto Service', 'Pet Store', 'Home Goods', etc.",
-  "status_note": "any important notes about the business status"
+  "status_note": "any important notes about the business status",
+  "is_in_shopping_center": false,
+  "shopping_center_name": null,
+  "site_plan_url": null
 }}
 
 Rules:
 - opening_hours: Use format "mo" "tu" "we" "th" "fr" "sa" "su". Use ranges like "mo-fr". Time in 24h HH:MM.
 - opening_date: Search news, Yelp reviews, Facebook posts for grand opening. Use earliest evidence.
 - If business is permanently closed, set is_closed=true and provide closing_date.
+- is_in_shopping_center: true if this store is inside a mall, strip mall, or shopping center.
+- shopping_center_name: name of the shopping center if applicable (e.g. "Deer Park Town Center").
+- site_plan_url: Search for a site plan / leasing map / floor directory of the shopping center.
+  Search: "[shopping center name] site plan", "[shopping center name] leasing map",
+  "[shopping center name] floor directory", "[address] site plan".
+  Look on: the SC official website, LoopNet, CBRE, JLL, CoStar, retailsitesusa.com.
+  Return a direct URL to a PDF, image, or webpage showing the floor plan. null if not found.
 - Return ONLY the JSON, no other text.
 """.strip()
 
@@ -110,6 +125,9 @@ def _parse_response(text: str) -> dict:
             "closing_date_source": data.get("closing_date_source"),
             "category": data.get("category", ""),
             "status_note": data.get("status_note", ""),
+            "is_in_shopping_center": bool(data.get("is_in_shopping_center", False)),
+            "shopping_center_name": data.get("shopping_center_name"),
+            "site_plan_url": data.get("site_plan_url"),
         }
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}\nText: {text[:500]}")
@@ -127,6 +145,9 @@ def _empty_result(note: str = "") -> dict:
         "closing_date_source": None,
         "category": "",
         "status_note": note,
+        "is_in_shopping_center": False,
+        "shopping_center_name": None,
+        "site_plan_url": None,
     }
 
 
