@@ -16,29 +16,66 @@ HEADERS = {
 }
 
 
+import re
+
+
+def _clean_name(name: str) -> str:
+    """Xóa ký tự đặc biệt gây lỗi khi query."""
+    return re.sub(r"['\"\u2019\u2018]", "", name).strip()
+
+
+def _strip_suite(address: str) -> str:
+    """
+    Xóa suite/apartment/unit number khỏi địa chỉ.
+    VD: '409 Commack Rd Ste 2, Deer Park, NY' → '409 Commack Rd, Deer Park, NY'
+    """
+    # Remove Ste/Suite/Apt/Unit/#/Fl patterns
+    cleaned = re.sub(
+        r'\b(ste|suite|apt|apartment|unit|fl|floor|#)\s*[\w\-]+\b',
+        '', address, flags=re.IGNORECASE
+    ).strip().strip(',').strip()
+    # Collapse multiple commas/spaces
+    cleaned = re.sub(r',\s*,', ',', cleaned)
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    return cleaned
+
+
+def _extract_city_state_zip(address: str) -> str:
+    """Lấy phần city, state, zip từ địa chỉ."""
+    parts = [p.strip() for p in address.split(',')]
+    # Thường là phần cuối: City, ST ZIP
+    return ', '.join(parts[-2:]) if len(parts) >= 2 else address
+
+
 def geocode(name: str, address: str) -> Optional[dict]:
     """
-    Tìm lat/lng cho một POI.
+    Tìm lat/lng cho một POI với nhiều chiến lược fallback.
 
-    Args:
-        name: Tên địa điểm, ví dụ "Valvoline Instant Oil Change"
-        address: Địa chỉ đầy đủ, ví dụ "1867 College Ave, Elmira, NY 14901"
-
-    Returns:
-        dict với keys: lat, lon, display_name, importance
-        hoặc None nếu không tìm thấy
+    Thứ tự thử:
+    1. Tên sạch + địa chỉ đầy đủ
+    2. Tên sạch + địa chỉ đã bỏ suite number
+    3. Chỉ địa chỉ đã bỏ suite number
+    4. Tên + City/State
     """
-    # Thử search cả tên + địa chỉ trước
-    query = f"{name}, {address}"
-    result = _search(query)
+    clean_name = _clean_name(name)
+    clean_addr = _strip_suite(address)
 
-    if result:
-        return result
+    strategies = [
+        (f"{clean_name}, {address}",    "name + full address"),
+        (f"{clean_name}, {clean_addr}", "name + stripped address"),
+        (clean_addr,                    "stripped address only"),
+        (f"{clean_name}, {_extract_city_state_zip(address)}", "name + city/state"),
+    ]
 
-    # Fallback: chỉ search địa chỉ
-    logger.warning(f"Không tìm thấy '{query}', thử chỉ địa chỉ...")
-    result = _search(address)
-    return result
+    for query, label in strategies:
+        result = _search(query)
+        if result:
+            if label != "name + full address":
+                logger.debug(f"Geocoded via: {label}")
+            return result
+
+    logger.warning(f"Khong the geocode: {name} | {address}")
+    return None
 
 
 def _search(query: str) -> Optional[dict]:
