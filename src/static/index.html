@@ -6,6 +6,9 @@
   <title>AutoPOI — Venue Data Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <!-- Leaflet Maps (free, no API key) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -356,6 +359,31 @@
       z-index: 999;
     }
     .toast.show { opacity: 1; transform: none; }
+
+    /* ── Map panel ── */
+    .map-panel {
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      margin-top: 16px;
+      display: none;
+    }
+    .map-panel.visible { display: block; animation: fadeIn 0.3s ease; }
+    .map-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: var(--surface2);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .map-toolbar span { font-size: 12px; font-weight: 600; color: var(--muted); }
+    .map-toolbar-links { display: flex; gap: 8px; flex-wrap: wrap; }
+    #leaflet-map { height: 300px; width: 100%; background: #0d0f14; }
+    /* Dark leaflet tiles */
+    .leaflet-tile { filter: brightness(0.85) saturate(0.9); }
   </style>
 </head>
 <body>
@@ -430,9 +458,21 @@
       <!-- Links -->
       <div class="links-row">
         <a id="gm-link" href="#" target="_blank" class="btn btn-link">🗺 Google Maps</a>
+        <a id="satellite-link" href="#" target="_blank" class="btn btn-link" style="display:none;">🛰 Satellite View</a>
+        <a id="sv-link" href="#" target="_blank" class="btn btn-link" style="display:none;">👁 Street View</a>
         <a id="ve-link" href="#" target="_blank" class="btn btn-link">🏛 Venue Editor</a>
       </div>
-    </div>
+
+      <!-- Leaflet Map -->
+      <div class="map-panel" id="map-panel">
+        <div class="map-toolbar">
+          <span>📍 Vị trí trên bản đồ (OSM)</span>
+          <div class="map-toolbar-links">
+            <a id="osm-link" href="#" target="_blank" class="btn btn-link" style="height:28px;font-size:12px;">Mở OSM</a>
+          </div>
+        </div>
+        <div id="leaflet-map"></div>
+      </div>
 
     <!-- Data Details -->
     <div class="card">
@@ -627,9 +667,32 @@
     }
 
     // Links
-    const gmLink = document.getElementById('gm-link');
-    const veLink = document.getElementById('ve-link');
+    const gmLink        = document.getElementById('gm-link');
+    const veLink        = document.getElementById('ve-link');
+    const satelliteLink = document.getElementById('satellite-link');
+    const svLink        = document.getElementById('sv-link');
+    const osmLink       = document.getElementById('osm-link');
+
     gmLink.href = d.gm_url || '#';
+
+    if (d.lat && d.lon) {
+      const lat = d.lat, lon = d.lon;
+      // Satellite View: Google Maps satellite mode
+      satelliteLink.href = `https://www.google.com/maps/@${lat},${lon},18z/data=!3m1!1e3`;
+      satelliteLink.style.display = 'inline-flex';
+      // Street View
+      svLink.href = `https://www.google.com/maps/@${lat},${lon},3a,75y,0h,90t/data=!3m6!1e1`;
+      svLink.style.display = 'inline-flex';
+      // OSM
+      osmLink.href = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=18/${lat}/${lon}`;
+      // Init/update Leaflet map
+      initMap(lat, lon, d.name);
+    } else {
+      satelliteLink.style.display = 'none';
+      svLink.style.display = 'none';
+      document.getElementById('map-panel').classList.remove('visible');
+    }
+
     if (d.ve_url) {
       veLink.href    = d.ve_url;
       veLink.style.opacity = '1';
@@ -688,6 +751,7 @@
 
   function hideResults() {
     document.getElementById('results').classList.remove('visible');
+    document.getElementById('map-panel').classList.remove('visible');
   }
 
   function showError(msg) {
@@ -753,6 +817,51 @@
     const t = document.getElementById('toast');
     t.classList.add('show');
     setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  // ── Leaflet Map ────────────────────────────────────────────────────────────
+  let leafletMap = null;
+  let leafletMarker = null;
+
+  function initMap(lat, lon, name) {
+    const mapPanel = document.getElementById('map-panel');
+    mapPanel.classList.add('visible');
+
+    if (!leafletMap) {
+      // Khởi tạo map lần đầu
+      leafletMap = L.map('leaflet-map', { zoomControl: true }).setView([lat, lon], 18);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 20,
+      }).addTo(leafletMap);
+
+      // Custom dark marker
+      const markerIcon = L.divIcon({
+        className: '',
+        html: `<div style="
+          width:32px;height:32px;
+          background:linear-gradient(135deg,#4f8cff,#7c5cfc);
+          border-radius:50% 50% 50% 0;
+          transform:rotate(-45deg);
+          border:2px solid #fff;
+          box-shadow:0 2px 8px rgba(0,0,0,0.5);
+        "></div>`,
+        iconSize: [32, 32],
+        iconAnchor: [16, 32],
+      });
+
+      leafletMarker = L.marker([lat, lon], { icon: markerIcon })
+        .addTo(leafletMap)
+        .bindPopup(`<b>${name}</b>`);
+    } else {
+      // Update vị trí
+      leafletMap.setView([lat, lon], 18);
+      leafletMarker.setLatLng([lat, lon])
+        .setPopupContent(`<b>${name}</b>`);
+    }
+
+    // Fix Leaflet size bug khi container bị ẩn trước đó
+    setTimeout(() => leafletMap.invalidateSize(), 100);
   }
 </script>
 </body>

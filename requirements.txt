@@ -4,3 +4,4 @@ PyYAML>=6.0
 rich>=13.7.0
 fastapi>=0.100.0
 uvicorn>=0.23.0
+pywebview>=5.0
