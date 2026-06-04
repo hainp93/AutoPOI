@@ -501,7 +501,10 @@
           <div class="data-icon">📅</div>
           <div class="data-label">Opening Date</div>
           <div class="data-value">
-            <div id="res-od" style="color: #d946ef; font-weight:600;">—</div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span id="res-od" style="color: #d946ef; font-weight:600;">—</span>
+              <span id="res-od-confidence" class="badge" style="display:none;font-size:10px;"></span>
+            </div>
             <div class="data-source" id="res-od-source"></div>
           </div>
         </div>
@@ -510,7 +513,10 @@
           <div class="data-icon">🚫</div>
           <div class="data-label">Closing Date</div>
           <div class="data-value">
-            <div id="res-cd" style="color: var(--red); font-weight:600;">—</div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span id="res-cd" style="color: var(--red); font-weight:600;">—</span>
+              <span id="res-cd-confidence" class="badge" style="display:none;font-size:10px;"></span>
+            </div>
             <div class="data-source" id="res-cd-source"></div>
           </div>
         </div>
@@ -773,12 +779,14 @@
     // Opening Date
     document.getElementById('res-od').textContent = d.opening_date || '(không tìm thấy)';
     setSource('res-od-source', d.opening_date_source);
+    setConfidenceBadge('res-od-confidence', d.opening_date_confidence);
 
     // Closing Date
     const cdRow = document.getElementById('cd-row');
     if (d.is_closed && d.closing_date) {
       document.getElementById('res-cd').textContent = d.closing_date;
       setSource('res-cd-source', d.closing_date_source);
+      setConfidenceBadge('res-cd-confidence', d.closing_date_confidence);
       cdRow.style.display = 'flex';
     } else {
       cdRow.style.display = 'none';
@@ -879,6 +887,21 @@
     } else {
       el.textContent = '';
     }
+  }
+
+  function setConfidenceBadge(id, level) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const cfg = {
+      high:   { text: '✓ High confidence',   cls: 'badge-green'  },
+      medium: { text: '~ Medium confidence', cls: 'badge-blue'   },
+      low:    { text: '⚠ Low confidence',    cls: 'badge badge-red' },
+      none:   { text: '? Unverified',         cls: 'badge-red'    },
+    };
+    const c = cfg[level] || cfg['none'];
+    el.textContent = c.text;
+    el.className   = `badge ${c.cls}`;
+    el.style.display = level && level !== 'none' ? 'inline-flex' : 'none';
   }
 
   function truncate(s, n) {
