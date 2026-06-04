@@ -132,26 +132,48 @@ def _extract_grounding_urls(response) -> list:
     return urls
 
 
+# URLs không liên quan, lọc ra
+_URL_BLOCKLIST = (
+    "w3.org", "schema.org", "xmlns", "json-ld",
+    "openstreetmap.org", "leafletjs.com", "unpkg.com",
+    "googleapis.com/fonts", "google.com/maps/embed",
+    "cdnjs.cloudflare", "html2canvas",
+)
+
+
+def _is_valid_source_url(url: str) -> bool:
+    """Kiểm tra URL có phải nguồn thực tế không."""
+    u = url.lower()
+    if any(blocked in u for blocked in _URL_BLOCKLIST):
+        return False
+    # Phải có path sau domain (loại URL quá ngắn)
+    if len(url) < 25:
+        return False
+    return True
+
+
 def _extract_urls_from_text(text: str) -> list:
     """Fallback: tìm URLs xuất hiện trong response text."""
-    raw = re.findall(r'https?://[^\s"\'<>)\]]+', text)
+    raw = re.findall(r'https?://[^\s"\' <>)\]]+', text)
     seen = set()
     result = []
     for u in raw:
         u = u.rstrip(".,;:)]")
-        if u not in seen and len(u) > 20:
+        if u not in seen and _is_valid_source_url(u):
             seen.add(u)
             result.append(u)
     return result
 
 
 def _find_source(urls: list, keywords: list) -> str:
-    """Tìm URL phù hợp nhất theo keywords."""
-    for url in urls:
+    """Tìm URL phù hợp nhất theo keywords. Trả về rỗng nếu không match."""
+    valid = [u for u in urls if _is_valid_source_url(u)]
+    for url in valid:
         url_lower = url.lower()
         if any(kw in url_lower for kw in keywords):
             return url
-    return urls[0] if urls else ""
+    # Không fallback nếu không match — tả về rỗng
+    return ""
 
 
 # ── Prompt ─────────────────────────────────────────────────────────────────────
