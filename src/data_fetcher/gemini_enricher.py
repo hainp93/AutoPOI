@@ -1,7 +1,7 @@
 """
 Gemini-powered data enrichment module.
 Dùng Gemini API (với Google Search grounding) để tìm:
-  - Opening Hours (nếu không có Places API)
+  - Opening Hours
   - Opening Date
   - Closing Date (nếu đã đóng cửa)
   - Category (loại địa điểm)
@@ -12,25 +12,19 @@ import json
 import logging
 import re
 from typing import Optional
-import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
 
 def setup_gemini(api_key: str, model: str = "gemini-2.0-flash"):
     """Khởi tạo Gemini client."""
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel(
-        model_name=model,
-        safety_settings={
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-        },
-    )
+    client = genai.Client(api_key=api_key)
+    return client, model
 
 
-def enrich_poi(model, name: str, address: str) -> dict:
+def enrich_poi(model_tuple, name: str, address: str) -> dict:
     """
     Dùng Gemini Search Grounding để tìm toàn bộ thông tin POI.
 
@@ -46,13 +40,16 @@ def enrich_poi(model, name: str, address: str) -> dict:
           - category: str (tên category tiếng Anh)
           - status_note: str (ghi chú thêm)
     """
+    client, model_name = model_tuple
     prompt = _build_prompt(name, address)
 
     try:
-        # Dùng Google Search grounding
-        response = model.generate_content(
-            prompt,
-            tools=[{"google_search": {}}],
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
         )
         raw_text = response.text
         logger.debug(f"Gemini raw response:\n{raw_text}")
