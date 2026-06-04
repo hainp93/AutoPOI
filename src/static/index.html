@@ -9,6 +9,8 @@
   <!-- Leaflet Maps (free, no API key) -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- html2canvas: capture map as image -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -466,9 +468,16 @@
       <!-- Leaflet Map -->
       <div class="map-panel" id="map-panel">
         <div class="map-toolbar">
-          <span>📍 Vị trí trên bản đồ (OSM)</span>
+          <span>📍 Vị trí trên bản đồ</span>
           <div class="map-toolbar-links">
-            <a id="osm-link" href="#" target="_blank" class="btn btn-link" style="height:28px;font-size:12px;">Mở OSM</a>
+            <button class="btn btn-link" id="toggle-satellite-btn"
+              style="height:28px;font-size:12px;"
+              onclick="toggleSatellite()">🛰 Satellite</button>
+            <a id="osm-link" href="#" target="_blank" class="btn btn-link"
+              style="height:28px;font-size:12px;">Mở OSM</a>
+            <button class="btn btn-link" id="screenshot-btn"
+              style="height:28px;font-size:12px;"
+              onclick="captureMap()">📷 Chụp ảnh</button>
           </div>
         </div>
         <div id="leaflet-map"></div>
@@ -557,6 +566,36 @@
           <div class="tag-copy-btn">
             <button class="btn btn-copy" onclick="copyTagRow('tag-status', this)">Copy</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Comment gợi ý cho Google Sheet -->
+    <div class="card" id="comment-card">
+      <div class="section-title" style="margin-bottom:12px;">💬 Comment gợi ý (dán vào cột Comment trong Sheet)</div>
+      <div style="position:relative;">
+        <textarea id="comment-text" readonly
+          style="
+            width:100%; min-height:120px;
+            background:var(--surface2); border:1px solid var(--border);
+            border-radius:8px; color:var(--text);
+            font-family:'JetBrains Mono',monospace; font-size:12px;
+            padding:14px; resize:vertical; outline:none;
+            line-height:1.7;
+          "
+        ></textarea>
+        <button class="btn btn-copy"
+          style="position:absolute;top:10px;right:10px;"
+          onclick="copyText(document.getElementById('comment-text').value, this)">
+          Copy
+        </button>
+      </div>
+      <!-- Screenshot slot -->
+      <div id="screenshot-preview" style="display:none; margin-top:12px;">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">📷 Ảnh bản đồ (kéo vào Sheet hoặc Jira):</div>
+        <img id="screenshot-img" style="width:100%;border-radius:8px;border:1px solid var(--border);" />
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <a id="screenshot-dl" download="poi-map.png" class="btn btn-link" style="font-size:12px;height:30px;">⬇ Tải về PNG</a>
         </div>
       </div>
     </div>
@@ -747,6 +786,9 @@
     }
 
     document.getElementById('results').classList.add('visible');
+
+    // Comment gợi ý
+    renderComment(d);
   }
 
   function hideResults() {
@@ -862,6 +904,137 @@
 
     // Fix Leaflet size bug khi container bị ẩn trước đó
     setTimeout(() => leafletMap.invalidateSize(), 100);
+  }
+
+  // ── Satellite layer toggle ───────────────────────────────────────────────
+  let osmLayer = null, satLayer = null, isSatellite = false;
+
+  function toggleSatellite() {
+    if (!leafletMap) return;
+    const btn = document.getElementById('toggle-satellite-btn');
+
+    if (!osmLayer) {
+      // Lưu lại OSM layer hiện tại
+      osmLayer = leafletMap.eachLayer(l => l);
+    }
+
+    if (!satLayer) {
+      satLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {
+          attribution: 'Tiles © Esri &mdash; Source: Esri, i-cubed, USDA, USGS',
+          maxZoom: 20,
+        }
+      );
+    }
+
+    if (!isSatellite) {
+      // Xóa OSM, thêm ESRI Satellite
+      leafletMap.eachLayer(l => { if (l._url && l._url.includes('openstreetmap')) leafletMap.removeLayer(l); });
+      satLayer.addTo(leafletMap);
+      btn.textContent = '🗺 Street Map';
+      btn.style.borderColor = 'var(--yellow)';
+      btn.style.color = 'var(--yellow)';
+      isSatellite = true;
+    } else {
+      // Xóa Satellite, thêm OSM lại
+      leafletMap.removeLayer(satLayer);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors', maxZoom: 20,
+      }).addTo(leafletMap);
+      btn.textContent = '🛰 Satellite';
+      btn.style.borderColor = '';
+      btn.style.color = '';
+      isSatellite = false;
+    }
+  }
+
+  // ── Map screenshot (html2canvas) ────────────────────────────────────────
+  async function captureMap() {
+    const btn = document.getElementById('screenshot-btn');
+    btn.textContent = '⏳ Capturing...';
+    btn.disabled = true;
+
+    try {
+      const mapEl = document.getElementById('leaflet-map');
+      const canvas = await html2canvas(mapEl, {
+        useCORS: true,
+        allowTaint: true,
+        scale: 2,
+        backgroundColor: '#0d0f14',
+      });
+
+      const dataUrl = canvas.toDataURL('image/png');
+      const preview = document.getElementById('screenshot-preview');
+      const img     = document.getElementById('screenshot-img');
+      const dlLink  = document.getElementById('screenshot-dl');
+
+      img.src    = dataUrl;
+      dlLink.href = dataUrl;
+      const name = (currentData?.name || 'poi').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+      dlLink.download = `${name}_map.png`;
+      preview.style.display = 'block';
+      showToast();
+    } catch (e) {
+      alert('Không chụp được: ' + e.message);
+    } finally {
+      btn.textContent = '📷 Chụp ảnh';
+      btn.disabled = false;
+    }
+  }
+
+  // ── Comment gợi ý ───────────────────────────────────────────────────────────
+  function renderComment(d) {
+    const lines = [];
+
+    // Opening Hours
+    if (d.opening_hours) {
+      lines.push(`[OH] ${d.opening_hours}`);
+      if (d.opening_hours_source) lines.push(`     Source: ${d.opening_hours_source}`);
+    } else {
+      lines.push(`[OH] (not found - check manually)`);
+    }
+
+    lines.push('');
+
+    // Opening Date
+    if (d.opening_date) {
+      lines.push(`[OD] ${d.opening_date}`);
+      if (d.opening_date_source) lines.push(`     Source: ${d.opening_date_source}`);
+    } else {
+      lines.push(`[OD] (not found - check Yelp, Facebook, news)`);
+    }
+
+    lines.push('');
+
+    // Closing Date (if applicable)
+    if (d.is_closed) {
+      lines.push(`[CD] ${d.closing_date || 'unknown'}`);
+      if (d.closing_date_source) lines.push(`     Source: ${d.closing_date_source}`);
+      lines.push('');
+    }
+
+    // Status
+    if (d.is_closed) {
+      lines.push(`[Status] PERMANENTLY CLOSED`);
+    } else {
+      lines.push(`[Status] Open - Deliverable`);
+    }
+
+    // Category
+    if (d.category) lines.push(`[Category] ${d.category}`);
+
+    // Coords
+    if (d.lat && d.lon) lines.push(`[Coords] ${d.lat.toFixed(6)}, ${d.lon.toFixed(6)}`);
+
+    // Extra note
+    if (d.status_note) {
+      lines.push('');
+      lines.push(`[Note] ${d.status_note}`);
+    }
+
+    document.getElementById('comment-text').value = lines.join('\n');
+    document.getElementById('screenshot-preview').style.display = 'none';
   }
 </script>
 </body>
