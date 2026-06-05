@@ -79,36 +79,32 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
     client1, client2, client3, model_name = _resolve_clients(model_config)
     result = _empty_result()
 
-    # ── Step 1: Hours + Status + Category (dùng key #1) ───────────────────────
+    # ── Step 1: Unified Gemini Search (All-in-one) ──────────────────────────────
     yield {"step": 1, "status": "running",
-           "label": "Tìm giờ mở cửa, danh mục và website chính thức..."}
+           "label": "Gemini đang tổng hợp dữ liệu (All-in-one)..."}
     try:
-        s1 = _step1_hours_status_category(client1, model_name, name, address)
+        s1 = _step1_gemini_unified(client1, model_name, name, address)
         result.update(s1)
         yield {"step": 1, "status": "done",
-               "label": "Tìm được giờ mở cửa",
+               "label": "Gemini hoàn tất tổng hợp",
                "partial": {k: result[k] for k in
                            ["opening_hours", "opening_hours_source",
                             "is_closed", "closing_date", "category",
-                            "official_website", "grounding_urls",
-                            "grounding_sources"]}}
+                            "official_website", "opening_date", "opening_date_source",
+                            "is_in_shopping_center", "site_plan_url"]}}
     except Exception as e:
         logger.error(f"Step 1 error: {e}")
         yield {"step": 1, "status": "error", "label": f"Step 1 lỗi: {e}"}
 
-    # ── Step 2a: Chrome browser — ƯU TIÊN DUYỆT WEB TRƯỚC ────────────────────
-    # Chrome là phương thức chính xác nhất: dùng profile thật, tự search Google+Yelp
-    chrome_found_date = False
+    # ── Step 2: Chrome browser (ưu tiên tìm Opening Date chính xác) ──────────────
     if browser_fetcher.is_configured():
         yield {"step": 2, "status": "running",
-               "label": "🌐 Chrome browser đang tìm kiếm ngày khai trương..."}
+               "label": "🌐 Chrome browser đang kiểm tra ngày khai trương..."}
         try:
-            # Truyền các source từ Step 1 cho Strategy 1 của Chrome
             r2c = browser_fetcher.browser_find_opening_date(
                 name, address, result.get("grounding_sources", [])
             )
             if r2c.get("opening_date"):
-                chrome_found_date = True
                 logger.info(f"Chrome tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
                 real_url = r2c.get("opening_date_source", "")
                 if real_url:
@@ -133,73 +129,19 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
                        "label": "🌐 Chrome hoàn tất: tìm được ngày",
                        "partial": {k: result.get(k) for k in
                                    ["opening_date", "opening_date_source",
-                                    "opening_date_confidence", "opening_date_evidence",
-                                    "grounding_sources", "grounding_urls"]}}
+                                    "opening_date_confidence", "opening_date_evidence"]}}
             else:
-                yield {"step": 2, "status": "running",
-                       "label": "🌐 Chrome không tìm được ngày, chuyển sang Gemini..."}
+                yield {"step": 2, "status": "done",
+                       "label": "🌐 Chrome không tìm thêm được ngày", "partial": {}}
         except Exception as e:
             logger.warning(f"Chrome lỗi: {e}")
-            yield {"step": 2, "status": "running", "label": f"🌐 Chrome lỗi, chuyển sang Gemini..."}
+            yield {"step": 2, "status": "error", "label": f"🌐 Chrome lỗi: {e}"}
     else:
-        # Debug: cho user biết tại sao Chrome không chạy
         cfg_path = browser_fetcher._cfg.get("profile_path", "")
         if not cfg_path:
             logger.info("Chrome bỏ qua: chrome.profile_path chưa cấu hình")
         else:
             logger.warning(f"Chrome bỏ qua: profile_path='{cfg_path}' nhưng is_configured()=False")
-
-    # ── Step 2b: Opening Date / Closing Date (Gemini Fallback) ───────────────
-    if not chrome_found_date:
-        time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 1 → 2
-        yield {"step": 2, "status": "running",
-               "label": "Gemini đang tìm ngày khai trương..."}
-        try:
-            s2 = _step2_dates(client2, model_name, name, address,
-                              official_website=result.get("official_website", ""))
-            result.update(s2)
-            # Merge grounding URLs + sources (tag step, dedup by domain)
-            for u in s2.get("grounding_urls", []):
-                if u not in result.get("grounding_urls", []):
-                    result.setdefault("grounding_urls", []).append(u)
-            for s in s2.get("grounding_sources", []):
-                s["step"] = s.get("step", 2)   # tag step 2
-                if not _source_domain_exists(result.get("grounding_sources", []), s):
-                    result.setdefault("grounding_sources", []).append(s)
-            yield {"step": 2, "status": "done",
-                   "label": "Gemini tìm được ngày",
-                   "partial": {k: result.get(k) for k in
-                               ["opening_date", "opening_date_source",
-                                "opening_date_confidence", "closing_date",
-                                "closing_date_source", "closing_date_confidence",
-                                "suggested_searches"]}}
-        except Exception as e:
-            logger.error(f"Step 2 error: {e}")
-            yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
-
-
-    # ── Step 3: Shopping Center + Site Plan (dùng key #3) ────────────────────
-    time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 2 → 3
-    yield {"step": 3, "status": "running",
-           "label": "Kiểm tra Shopping Center và Site Plan..."}
-    try:
-        s3 = _step3_shopping_center(client3, model_name, name, address)
-        result.update(s3)
-        for u in s3.get("grounding_urls", []):
-            if u not in result["grounding_urls"]:
-                result["grounding_urls"].append(u)
-        for s in s3.get("grounding_sources", []):
-            s["step"] = s.get("step", 3)   # tag step 3
-            if not _source_domain_exists(result["grounding_sources"], s):
-                result["grounding_sources"].append(s)
-        yield {"step": 3, "status": "done",
-               "label": "Hoàn tất",
-               "partial": {k: result[k] for k in
-                           ["is_in_shopping_center", "shopping_center_name",
-                            "site_plan_url"]}}
-    except Exception as e:
-        logger.error(f"Step 3 error: {e}")
-        yield {"step": 3, "status": "error", "label": f"Step 3 lỗi: {e}"}
 
     yield {"step": "final", "data": result}
 
@@ -217,37 +159,49 @@ def enrich_poi(model_config, name: str, address: str) -> dict:
 # Step Implementations
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _step1_hours_status_category(client, model_name: str,
-                                  name: str, address: str) -> dict:
+def _step1_gemini_unified(client, model_name: str, name: str, address: str) -> dict:
     """
-    Step 1: Tìm opening hours, trạng thái, category từ website chính thức.
-    Focus: Tìm trang web của location cụ thể này, không phải chain tổng.
+    Step 1: Unified Gemini Search (All-in-one).
+    Tìm tất cả các trường dữ liệu bằng 1 lệnh gọi Gemini Grounding duy nhất.
     """
     prompt = f"""
-You are a POI researcher. Find accurate business information for this specific location:
+You are a POI data researcher. Find accurate information about this business:
 
-Business: {name}
-Address: {address}
+**Business**: {name}
+**Address**: {address}
 
-Search for: "{name} {address} hours" and "{name} official website location"
+Search the web and return ONLY a JSON object with exactly these fields:
 
-Return ONLY a JSON object:
 {{
-  "opening_hours": "VE format: 'mo 09:00-21:00; tu-fr 09:00-22:00; sa 10:00-20:00; su 11:00-18:00' or null",
-  "opening_hours_source": "exact URL of the page where you found the hours (must be a real URL you visited)",
+  "opening_hours": "VE format string, e.g. 'mo 09:00-21:00; tu-fr 09:00-22:00; sa 10:00-20:00; su 11:00-18:00'",
+  "opening_hours_source": "URL where you found the hours",
+  "opening_date": "YYYY-MM-DD or YYYY-MM or YYYY (when this location first opened)",
+  "opening_date_source": "URL where you found the opening date",
   "is_closed": false,
   "closing_date": null,
-  "category": "specific category e.g. 'Auto Service', 'Swimming Pool Supplies', 'Pet Store'",
+  "closing_date_source": null,
+  "category": "business category e.g. 'Auto Service', 'Pet Store', 'Home Goods', etc.",
+  "status_note": "any important notes about the business status",
+  "is_in_shopping_center": false,
+  "shopping_center_name": null,
+  "site_plan_url": null,
   "official_website": "URL of the official business website or location page, or null"
 }}
 
 Rules:
-- opening_hours format: days as mo/tu/we/th/fr/sa/su, ranges like mo-fr, 24h time HH:MM.
+- opening_hours: Use format "mo" "tu" "we" "th" "fr" "sa" "su". Use ranges like "mo-fr". Time in 24h HH:MM.
 - STRICT RULE: Do NOT use aggregator or review sites (e.g., carfax.com, yelp.com, yellowpages.com, foursquare.com, mapquest.com) as the `opening_hours_source` because QA cannot access them (403 Forbidden).
 - If you find the hours on an aggregator, you MUST find the official website or Facebook page and return that as the source instead. If no official site exists, return the Google Maps link.
-- If this specific location is permanently closed, set is_closed=true.
-- official_website: prefer the location-specific page (e.g. chain.com/stores/city-state) over homepage.
-- Return ONLY JSON, no markdown.
+- opening_date: Search news, Yelp reviews, Facebook posts for grand opening. Use earliest evidence.
+- If business is permanently closed, set is_closed=true and provide closing_date.
+- is_in_shopping_center: true if this store is inside a mall, strip mall, or shopping center.
+- shopping_center_name: name of the shopping center if applicable (e.g. "Deer Park Town Center").
+- site_plan_url: Search for a site plan / leasing map / floor directory of the shopping center.
+  Search: "[shopping center name] site plan", "[shopping center name] leasing map",
+  "[shopping center name] floor directory", "[address] site plan".
+  Look on: the SC official website, LoopNet, CBRE, JLL, CoStar, retailsitesusa.com.
+  Return a direct URL to a PDF, image, or webpage showing the floor plan. null if not found.
+- Return ONLY the JSON, no other text.
 """.strip()
 
     response = _call_gemini(client, model_name, prompt)
@@ -255,7 +209,7 @@ Rules:
     data = _parse_json(raw)
     sources = _extract_grounding_sources(response)
     for s in sources:
-        s["step"] = 1   # tag step 1 (hours)
+        s["step"] = 1   # tag step 1 (unified)
     
     # Chỉ lấy URL có thật từ Google Search Grounding. Tuyệt đối không trích xuất URL hallucinate từ raw text.
     urls = [s["url"] for s in sources]
@@ -266,251 +220,23 @@ Rules:
                                              ["hour", "schedule", "time", "store", "location"], 
                                              block_aggregators=True,
                                              official_website=data.get("official_website", "")),
+        "opening_date":             data.get("opening_date", "") or "",
+        "opening_date_source":      _pick_source(urls, data.get("opening_date_source", ""),
+                                                 ["yelp", "facebook", "news", "patch", "article", "grand"]),
+        "opening_date_confidence":  "medium" if data.get("opening_date") else "none",
         "is_closed":            bool(data.get("is_closed", False)),
         "closing_date":         data.get("closing_date"),
-        "closing_date_source":  "",
-        "closing_date_confidence": "none",
+        "closing_date_source":  _pick_source(urls, data.get("closing_date_source", ""), ["close", "news", "article"]),
+        "closing_date_confidence": "medium" if data.get("closing_date") else "none",
         "category":             data.get("category", "") or "",
         "official_website":     data.get("official_website", "") or "",
+        "is_in_shopping_center": bool(data.get("is_in_shopping_center", False)),
+        "shopping_center_name": data.get("shopping_center_name", "") or "",
+        "site_plan_url":        _pick_source(urls, data.get("site_plan_url", ""),
+                                             ["plan", "map", "directory", "lease", "property"]),
         "grounding_urls":       urls,
         "grounding_sources":    sources,
     }
-
-
-def _step2_dates(client, model_name: str, name: str, address: str,
-                 official_website: str = "") -> dict:
-    """
-    Step 2: Tìm opening date từ news, Yelp, Facebook.
-    Phase 2a: Google Search để tìm candidate URLs (snippets).
-    Phase 2b: Nếu không tìm được, dùng url_context để đọc chi tiết trang web.
-    """
-    city_state = _extract_city_state(address)
-    extra = f"\nThe official website is: {official_website}" if official_website else ""
-    prompt = f"""
-You are a POI researcher. Find when this specific location FIRST OPENED (grand opening date):
-
-Business: {name}
-Address: {address}
-City/State: {city_state}{extra}
-
-Search for:
-1. "{name} {city_state} grand opening" or "{name} {city_state} opened"
-2. Yelp page for this location - check the first review date
-3. Local news articles about this location opening
-4. Facebook posts about the grand opening
-
-Return ONLY a JSON object:
-{{
-  "opening_date": "YYYY-MM-DD or YYYY-MM or YYYY or null",
-  "opening_date_confidence": "high|medium|low|none",
-  "opening_date_source": "exact URL of news article, Yelp page, or Facebook post you found",
-  "opening_date_evidence": "brief description of what you found (e.g. 'Yelp first review dated 2019-03-15')",
-  "closing_date": null,
-  "closing_date_confidence": "none",
-  "closing_date_source": "",
-  "suggested_searches": ["search query 1 if not found", "search query 2"]
-}}
-
-Confidence rules:
-- "high": explicit grand opening news article or press release with exact date
-- "medium": first Yelp/Google review date, Facebook grand opening post
-- "low": indirect evidence (chain expansion article, permit record)
-- "none": could not find — fill suggested_searches with useful Google queries
-
-Return ONLY JSON, no markdown.
-""".strip()
-
-    response = _call_gemini(client, model_name, prompt)
-    raw = response.text
-    data = _parse_json(raw)
-    sources = _extract_grounding_sources(response)
-    urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
-
-    result = {
-        "opening_date":             data.get("opening_date", "") or "",
-        "opening_date_source":      _pick_source(urls, data.get("opening_date_source", ""),
-                                                 ["yelp", "facebook", "news", "open", "grand"]),
-        "opening_date_confidence":  data.get("opening_date_confidence", "none"),
-        "opening_date_evidence":    data.get("opening_date_evidence", "") or "",
-        "closing_date":             data.get("closing_date"),
-        "closing_date_source":      _pick_source(urls, data.get("closing_date_source", ""),
-                                                 ["clos", "shut", "bankrupt"]),
-        "closing_date_confidence":  data.get("closing_date_confidence", "none"),
-        "suggested_searches":       data.get("suggested_searches", []) or [],
-        "grounding_urls":           urls,
-        "grounding_sources":        sources,
-    }
-
-    # ── Phase 2b: Đọc chi tiết trang nếu chưa tìm được ngày ─────────────────
-    if not result["opening_date"] or result["opening_date_confidence"] == "none":
-        logger.info("Step 2a không tìm được OD — chuyển sang Phase 2b (url_context)...")
-        readable_urls = _filter_readable_urls(urls)
-        suggestions   = result["suggested_searches"]
-        if readable_urls or suggestions:
-            try:
-                r2b = _step2b_read_urls(client, model_name, name, address,
-                                        readable_urls, suggestions)
-                if r2b.get("opening_date"):
-                    logger.info(f"Phase 2b tìm được: {r2b['opening_date']} ({r2b['opening_date_confidence']})")
-                    for u in r2b.get("grounding_urls", []):
-                        if u not in result["grounding_urls"]:
-                            result["grounding_urls"].append(u)
-                    for s in r2b.get("grounding_sources", []):
-                        if not any(x["url"] == s["url"] for x in result["grounding_sources"]):
-                            result["grounding_sources"].append(s)
-                    result.update({k: v for k, v in r2b.items()
-                                   if k not in ("grounding_urls", "grounding_sources")})
-            except Exception as e:
-                logger.warning(f"Phase 2b lỗi: {e}")
-
-    return result
-
-
-def _filter_readable_urls(urls: list) -> list:
-    """
-    Giữ lại tất cả grounding URLs (kể cả redirect Google) vì chúng hoạt động
-    khi Gemini đọc qua url_context tool. Loại bỏ chỉ các CDN/font vô nghĩa.
-    """
-    return [u for u in urls if _is_valid_source_url(u)][:6]
-
-
-def _step2b_read_urls(client, model_name: str, name: str, address: str,
-                      urls: list, suggested_searches: list) -> dict:
-    """
-    Phase 2b: Dùng url_context tool để Gemini THỰC SỰ FETCH và đọc nội dung
-    các trang Yelp/news/Facebook — không chỉ đọc snippet từ Google Search.
-    """
-    url_lines    = "\n".join(f"- {u}" for u in urls) if urls else "(không có URL cụ thể)"
-    search_lines = "\n".join(f'- Search: "{s}"' for s in suggested_searches[:3]) \
-                   if suggested_searches else ""
-
-    prompt = f"""
-You are a POI researcher. Open and READ the following web pages to find the GRAND OPENING DATE
-of this specific business location:
-
-Business: {name}
-Address: {address}
-
-Pages to open and read:
-{url_lines}
-
-{f"If pages above don't help, also try:{chr(10)}{search_lines}" if search_lines else ""}
-
-Instructions:
-- Actually OPEN each URL and read the page content
-- On Yelp: look at the date of the FIRST (oldest) review — that's the earliest known open date
-- On news sites: look for "grand opening", "now open", "opened" with a specific date
-- On Facebook: look for grand opening event posts
-- On the business website: look for "established", "founded", "since YYYY"
-
-Return ONLY a JSON object:
-{{
-  "opening_date": "YYYY-MM-DD or YYYY-MM or YYYY or null",
-  "opening_date_confidence": "high|medium|low|none",
-  "opening_date_source": "exact URL where you found the date",
-  "opening_date_evidence": "what you found, e.g. 'Yelp first review by John D. dated March 15, 2019'",
-  "closing_date": null,
-  "closing_date_confidence": "none",
-  "closing_date_source": ""
-}}
-
-Confidence: high=grand opening article, medium=first Yelp/review date, low=indirect, none=not found
-Return ONLY JSON, no markdown.
-""".strip()
-
-    try:
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[
-                    types.Tool(url_context=types.UrlContext()),
-                    types.Tool(google_search=types.GoogleSearch()),
-                ],
-            ),
-        )
-    except Exception as e:
-        # url_context có thể không hỗ trợ trên model fallback — dùng chỉ google_search
-        if "url_context" in str(e).lower() or "unsupported" in str(e).lower() \
-                or "invalid" in str(e).lower():
-            logger.warning(f"url_context không hỗ trợ trên {model_name}, dùng google_search: {e}")
-            response = _call_gemini(client, model_name, prompt)
-        else:
-            raise
-
-    raw = response.text
-    data = _parse_json(raw)
-    sources = _extract_grounding_sources(response)
-    found_urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
-
-    return {
-        "opening_date":            data.get("opening_date", "") or "",
-        "opening_date_source":     _pick_source(found_urls, data.get("opening_date_source", ""),
-                                                ["yelp", "facebook", "news", "open", "grand"]),
-        "opening_date_confidence": data.get("opening_date_confidence", "none"),
-        "opening_date_evidence":   data.get("opening_date_evidence", "") or "",
-        "closing_date":            data.get("closing_date"),
-        "closing_date_source":     _pick_source(found_urls, data.get("closing_date_source", ""),
-                                                ["clos", "shut", "bankrupt"]),
-        "closing_date_confidence": data.get("closing_date_confidence", "none"),
-        "grounding_urls":          found_urls,
-        "grounding_sources":       sources,
-    }
-
-
-def _step3_shopping_center(client, model_name: str, name: str, address: str) -> dict:
-    """
-    Step 3: Xác định Shopping Center và tìm Site Plan / Leasing Map.
-    """
-    prompt = f"""
-You are a POI researcher. Determine if this business is inside a shopping center:
-
-Business: {name}
-Address: {address}
-
-Search for:
-1. Is "{name}" at "{address}" inside a mall, strip mall, or shopping center?
-2. If yes, what is the shopping center name?
-3. Search: "[shopping center name] site plan" or "[shopping center name] leasing map" on
-   LoopNet, CBRE, JLL, CoStar, retailsitesusa.com, or the SC's official website.
-
-Return ONLY a JSON object:
-{{
-  "is_in_shopping_center": false,
-  "shopping_center_name": null,
-  "site_plan_url": "direct URL to a PDF or webpage with the floor plan/site plan, or null"
-}}
-
-Rules:
-- is_in_shopping_center = true for: mall, strip mall, power center, lifestyle center, outlet center.
-- is_in_shopping_center = false for: standalone building, gas station, office park.
-- site_plan_url: must be a real URL you actually found. null if not found.
-- Return ONLY JSON, no markdown.
-""".strip()
-
-    response = _call_gemini(client, model_name, prompt)
-    raw = response.text
-    data = _parse_json(raw)
-    sources = _extract_grounding_sources(response)
-    urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
-
-    return {
-        "is_in_shopping_center": bool(data.get("is_in_shopping_center", False)),
-        "shopping_center_name":  data.get("shopping_center_name"),
-        "site_plan_url":         data.get("site_plan_url"),
-        "grounding_urls":        urls,
-        "grounding_sources":     sources,
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Model chính và model fallback khi gặp 429
-_FALLBACK_MODEL = "gemini-2.5-flash-lite"
-# Delay retry (giây) nếu cả fallback cũng bị 429: lần 1, lần 2
-_RETRY_DELAYS = [20, 60]
 
 
 def _is_rate_limit(e: Exception) -> bool:
