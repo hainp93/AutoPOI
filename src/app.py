@@ -53,7 +53,6 @@ gemini_api_key  = gemini_cfg.get("api_key", "")
 active_engine = config.get("engine", "gemini").lower().strip()
 
 gemini_model = None
-searxng_cfg  = None
 
 if active_engine == "gemini" or active_engine not in ("searxng",):
     active_engine = "gemini"
@@ -67,18 +66,21 @@ if active_engine == "gemini" or active_engine not in ("searxng",):
     else:
         print("[ERROR] engine=gemini nhưng chưa điền Gemini API key!")
         sys.exit(1)
-elif active_engine == "searxng":
-    raw_sx   = config.get("searxng", {})
-    raw_ol   = config.get("ollama",  {})
-    searxng_cfg = searxng_enricher.build_config({
-        "search_backend":  raw_sx.get("search_backend", "duckduckgo"),
-        "searxng_url":    raw_sx.get("url",   "http://localhost:8888"),
-        "max_results":    raw_sx.get("max_results", 5),
-        "ollama_url":     raw_ol.get("url",   "http://localhost:11434"),
-        "ollama_model":   raw_ol.get("model", "llama3.1:8b"),
-        "ollama_timeout": raw_ol.get("timeout", 120),
-    })
-    # Kiểm tra dịch vụ
+
+# ── Luôn khởi tạo searxng_cfg (cho phép UI switch sang bất cứ lúc nào) ───────
+_raw_sx = config.get("searxng", {})
+_raw_ol = config.get("ollama",  {})
+searxng_cfg = searxng_enricher.build_config({
+    "search_backend":  _raw_sx.get("search_backend", "duckduckgo"),
+    "searxng_url":    _raw_sx.get("url",   "http://localhost:8888"),
+    "max_results":    _raw_sx.get("max_results", 5),
+    "ollama_url":     _raw_ol.get("url",   "http://localhost:11434"),
+    "ollama_model":   _raw_ol.get("model", "llama3.1:8b"),
+    "ollama_timeout": _raw_ol.get("timeout", 120),
+})
+
+if active_engine == "searxng":
+    # In trạng thái dịch vụ khi dùng engine searxng
     svc = searxng_enricher.check_services(searxng_cfg)
     sx_ok = "✓" if svc["searxng"] else "✗"
     ol_ok = "✓" if svc["ollama"]  else "✗"
