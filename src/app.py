@@ -71,6 +71,7 @@ elif active_engine == "searxng":
     raw_sx   = config.get("searxng", {})
     raw_ol   = config.get("ollama",  {})
     searxng_cfg = searxng_enricher.build_config({
+        "search_backend":  raw_sx.get("search_backend", "duckduckgo"),
         "searxng_url":    raw_sx.get("url",   "http://localhost:8888"),
         "max_results":    raw_sx.get("max_results", 5),
         "ollama_url":     raw_ol.get("url",   "http://localhost:11434"),
@@ -82,8 +83,9 @@ elif active_engine == "searxng":
     sx_ok = "✓" if svc["searxng"] else "✗"
     ol_ok = "✓" if svc["ollama"]  else "✗"
     models = svc.get("ollama_models", [])
-    print(f"[AutoPOI] 🧊 Brain: SearXNG+Ollama")
-    print(f"[AutoPOI]   SearXNG  {sx_ok} {searxng_cfg['searxng_url']}")
+    backend_label = "DuckDuckGo" if searxng_cfg["search_backend"] == "duckduckgo" else "SearXNG"
+    print(f"[AutoPOI] 🧊 Brain: {backend_label} + Ollama")
+    print(f"[AutoPOI]   Search   {sx_ok} {backend_label}")
     print(f"[AutoPOI]   Ollama   {ol_ok} {searxng_cfg['ollama_url']} | model: {searxng_cfg['ollama_model']}")
     if models:
         print(f"[AutoPOI]   Models available: {', '.join(models[:5])}")

@@ -61,12 +61,16 @@ pipeline:
   max_retries: 3
   retry_delay: 30            # Giây chờ trước khi retry
 
-# ─── SEARXNG + OLLAMA (Self-hosted Engine) ────────────────────────────────
+# ─── OPEN-SOURCE ENGINE (DuckDuckGo + Playwright + Ollama) ─────────────────────
 # Chỉ cần điền khi engine: "searxng"
-# Hướng dẫn cài SearXNG: docker run -d -p 8888:8080 searxng/searxng
-# Hướng dẫn cài Ollama:  https://ollama.com  →  ollama pull llama3.1:8b
 searxng:
-  url: "http://localhost:8888"  # URL SearXNG self-hosted (hoặc IP VPS)
+  # Backend tìm kiếm:
+  #   "duckduckgo" → Không cần cài thêm gì! Chạy như thư viện Python ← khuyến nghị
+  #                  pip install duckduckgo-search
+  #   "searxng"    → Tự host trên VPS (cần Docker hoặc cài thủ công)
+  #                  docker run -d -p 8888:8080 searxng/searxng
+  search_backend: "duckduckgo"
+  url: "http://localhost:8888"  # chỉ dùng khi backend: "searxng"
   max_results: 5                # Số URL tối đa mỗi lần tìm kiếm
 
 ollama:
@@ -74,7 +78,6 @@ ollama:
   # Models khuyến nghị với RTX 5060Ti 16GB:
   #   llama3.1:8b   → 6GB VRAM, nhanh, tốt tiếng Anh (khuyến nghị)
   #   mistral:7b    → 5GB VRAM, nhanh hơn một chút
-  #   llama3.1:70b  → cần 40GB VRAM, quá sức với 16GB
   model: "llama3.1:8b"
   timeout: 120  # Giây chờ Ollama trả kết quả
 

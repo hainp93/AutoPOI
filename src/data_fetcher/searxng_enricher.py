@@ -1,10 +1,14 @@
 """
-AutoPOI — SearXNG + Playwright + Ollama Enricher
-=================================================
-Thay thế Gemini API bằng stack 100% self-hosted, không giới hạn:
-  - SearXNG : tìm kiếm web, trả về URL thật (tổng hợp Google, Bing, Yahoo)
-  - Playwright: tải nội dung trang web (hỗ trợ JS, lazy-load)
-  - Ollama   : phân tích text, trả về JSON có cấu trúc (Llama3, Mistral, ...)
+AutoPOI — Open-Source Enricher (DuckDuckGo + Playwright + Ollama)
+==================================================================
+Stack 100% self-hosted, không giới hạn, không cần Docker:
+  - DuckDuckGo Search : tìm kiếm web, không cần API key, chạy như thư viện Python
+                        (pip install duckduckgo-search)
+  - Playwright        : tải nội dung trang web (hỗ trợ JS, lazy-load)
+  - Ollama            : phân tích text, trả về JSON có cấu trúc (Llama3, Mistral, ...)
+
+Nếu muốn dùng SearXNG (self-hosted) thay cho DuckDuckGo:
+  đặt search_backend: "searxng" trong config.yaml
 
 Interface giống hệt gemini_enricher để dễ thay thế:
   - enrich_poi_stream_searxng(cfg, name, address) → generator[dict]
@@ -28,12 +32,13 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_CFG = {
-    "searxng_url":  "http://localhost:8888",
-    "ollama_url":   "http://localhost:11434",
-    "ollama_model": "llama3.1:8b",
-    "ollama_timeout": 120,
-    "max_results":  5,
-    "page_timeout": 15,   # giây chờ Playwright tải trang
+    "search_backend":  "duckduckgo",      # "duckduckgo" (không cần cài) | "searxng" (self-hosted)
+    "searxng_url":     "http://localhost:8888",  # chỉ dùng khi backend=searxng
+    "ollama_url":      "http://localhost:11434",
+    "ollama_model":    "llama3.1:8b",
+    "ollama_timeout":  120,
+    "max_results":     5,
+    "page_timeout":    15,   # giây chờ Playwright tải trang
 }
 
 # Domains bị chặn (aggregators trả về 403 hoặc không có thông tin hữu ích)
@@ -63,13 +68,26 @@ def build_config(raw: dict) -> dict:
 
 
 def check_services(cfg: dict) -> dict:
-    """Kiểm tra SearXNG và Ollama có đang chạy không. Trả về status dict."""
-    status = {"searxng": False, "ollama": False, "errors": []}
-    try:
-        r = requests.get(f"{cfg['searxng_url']}/", timeout=3)
-        status["searxng"] = r.status_code < 500
-    except Exception as e:
-        status["errors"].append(f"SearXNG: {e}")
+    """Kiểm tra Ollama và tùy chọn SearXNG có đang chạy không."""
+    backend = cfg.get("search_backend", "duckduckgo")
+    status = {"searxng": True, "ollama": False, "errors": [], "search_backend": backend}
+
+    if backend == "duckduckgo":
+        # Kiểm tra thư viện duckduckgo-search có được cài không
+        try:
+            from duckduckgo_search import DDGS  # noqa
+            status["searxng"] = True
+        except ImportError:
+            status["searxng"] = False
+            status["errors"].append("DuckDuckGo: chưa cài thư viện. Chạy: pip install duckduckgo-search")
+    else:
+        # SearXNG: kiểm tra HTTP
+        try:
+            r = requests.get(f"{cfg['searxng_url']}/", timeout=3)
+            status["searxng"] = r.status_code < 500
+        except Exception as e:
+            status["searxng"] = False
+            status["errors"].append(f"SearXNG: {e}")
 
     try:
         r = requests.get(f"{cfg['ollama_url']}/api/tags", timeout=3)
@@ -84,38 +102,63 @@ def check_services(cfg: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 1: SearXNG Search
+# Step 1: Search (DuckDuckGo by default, SearXNG optional)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _is_blocked(url: str) -> bool:
-    try:
-        host = urlparse(url).netloc.lower()
-        return any(b in host for b in _BLOCKLIST)
-    except Exception:
-        return False
-
-
-def _priority_score(url: str) -> int:
-    """Cao = ưu tiên cao. Trang chính thức của chuỗi hoặc social > aggregator."""
-    host = urlparse(url).netloc.lower() if url else ""
-    for p in _PRIORITY_DOMAINS:
-        if p in host:
-            return 10
-    if any(kw in url.lower() for kw in ["/locations/", "/store/", "/stores/", "/find-us/"]):
-        return 8
-    return 0
-
-
-def search_searxng(query: str, cfg: dict, categories: str = "general") -> list[dict]:
+def _search(query: str, cfg: dict) -> list[dict]:
     """
-    Gọi SearXNG JSON API để tìm kiếm.
-    Trả về list {url, title, content, domain} đã lọc bỏ blocklist.
+    Tìm kiếm web và trả về list URLs thật.
+    Backend: DuckDuckGo (mặc định, không cần server) hoặc SearXNG (self-hosted).
+    """
+    backend = cfg.get("search_backend", "duckduckgo")
+    if backend == "searxng":
+        return _search_searxng(query, cfg)
+    return _search_duckduckgo(query, cfg)
+
+
+def _search_duckduckgo(query: str, cfg: dict) -> list[dict]:
+    """
+    Dùng thư viện duckduckgo-search (pip install duckduckgo-search).
+    Không cần API key, không cần server, chạy như thư viện Python đơn thuần.
+    """
+    try:
+        from duckduckgo_search import DDGS
+    except ImportError:
+        logger.error("Thư viện 'duckduckgo-search' chưa được cài. Chạy: pip install duckduckgo-search")
+        return []
+
+    try:
+        results = []
+        with DDGS() as ddgs:
+            hits = list(ddgs.text(query, max_results=cfg.get("max_results", 5) + 3))
+        for r in hits:
+            u = r.get("href", "")
+            if not u or _is_blocked(u):
+                continue
+            results.append({
+                "url":     u,
+                "title":   r.get("title", ""),
+                "content": r.get("body",  ""),
+                "domain":  urlparse(u).netloc.replace("www.", ""),
+                "score":   _priority_score(u),
+            })
+        results.sort(key=lambda x: -x["score"])
+        return results[:cfg.get("max_results", 5)]
+    except Exception as e:
+        logger.error(f"DuckDuckGo search lỗi: {e}")
+        return []
+
+
+def _search_searxng(query: str, cfg: dict) -> list[dict]:
+    """
+    Gọi SearXNG JSON API để tìm kiếm (fallback nếu muốn self-hosted).
+    Cần dựng SearXNG trước: docker run -d -p 8888:8080 searxng/searxng
     """
     try:
         params = {
             "q":          query,
             "format":     "json",
-            "categories": categories,
+            "categories": "general",
             "language":   "en-US",
         }
         url = f"{cfg['searxng_url']}/search?{urlencode(params)}"
@@ -137,12 +180,9 @@ def search_searxng(query: str, cfg: dict, categories: str = "general") -> list[d
             "content": r.get("content", ""),
             "domain":  urlparse(u).netloc.replace("www.", ""),
             "score":   _priority_score(u),
-            "step":    1,
         })
-
-    # Sắp xếp: ưu tiên domain chính thức / social
     results.sort(key=lambda x: -x["score"])
-    return results[:cfg["max_results"]]
+    return results[:cfg.get("max_results", 5)]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -342,9 +382,11 @@ def enrich_poi_stream_searxng(cfg: dict, name: str, address: str) -> Generator[d
     all_sources: list[dict] = []
     all_urls: list[str] = []
 
-    # ── Step 1: SearXNG Search ──────────────────────────────────────────────
+    # ── Step 1: Web Search ───────────────────────────────────────────────────
+    backend = cfg.get("search_backend", "duckduckgo")
+    backend_label = "DuckDuckGo" if backend == "duckduckgo" else "SearXNG"
     yield {"step": 1, "status": "running",
-           "label": "🔍 SearXNG đang tìm kiếm trên web..."}
+           "label": f"🔍 {backend_label} đang tìm kiếm trên web..."}
 
     search_results = []
     queries = [
@@ -354,7 +396,7 @@ def enrich_poi_stream_searxng(cfg: dict, name: str, address: str) -> Generator[d
     ]
     seen_domains: set[str] = set()
     for q in queries:
-        hits = search_searxng(q, cfg)
+        hits = _search(q, cfg)
         for h in hits:
             dom = h.get("domain", "")
             if dom not in seen_domains:
@@ -365,7 +407,7 @@ def enrich_poi_stream_searxng(cfg: dict, name: str, address: str) -> Generator[d
 
     if not search_results:
         yield {"step": 1, "status": "error",
-               "label": "❌ SearXNG không tìm được kết quả nào — kiểm tra kết nối"}
+               "label": f"❌ {backend_label} không tìm được kết quả nào"}
         yield {"step": "final", "data": result}
         return
 
@@ -376,7 +418,7 @@ def enrich_poi_stream_searxng(cfg: dict, name: str, address: str) -> Generator[d
         all_urls.append(sr["url"])
 
     yield {"step": 1, "status": "done",
-           "label": f"🔍 Tìm được {len(search_results)} nguồn từ SearXNG",
+           "label": f"🔍 Tìm được {len(search_results)} nguồn ({backend_label})",
            "partial": {"grounding_urls": all_urls, "grounding_sources": all_sources}}
 
     # ── Step 2: Playwright fetch pages ─────────────────────────────────────
