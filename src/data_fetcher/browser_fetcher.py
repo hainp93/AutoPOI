@@ -14,6 +14,8 @@ Dùng Chrome thật với profile người dùng (cookies, session, login Google
 import re
 import time
 import logging
+import os
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -29,14 +31,54 @@ _cfg = {
 
 def setup_browser(profile_path: str, profile_dir: str = "Default",
                   offscreen_x: int = -3000, page_wait: int = 3):
-    """Cấu hình browser fetcher từ config.yaml."""
+    """
+    Cấu hình browser fetcher từ config.yaml.
+    profile_path có thể là:
+      - "auto"  → tự detect theo HOME của máy hiện tại (Windows/Mac/Linux)
+      - "đường dẫn đầy đủ"  → dùng nguyên
+      - "" / None  → không dùng browser (Step 2c bị tắt)
+    """
+    resolved = _resolve_profile_path(profile_path)
     _cfg.update({
-        "profile_path": profile_path,
+        "profile_path": resolved,
         "profile_dir":  profile_dir,
         "offscreen_x":  offscreen_x,
         "page_wait":    page_wait,
     })
-    logger.info(f"BrowserFetcher configured: {profile_path} / {profile_dir}")
+    if resolved:
+        logger.info(f"BrowserFetcher: profile='{resolved}' / dir='{profile_dir}'")
+    else:
+        logger.info("BrowserFetcher: không có profile, Step 2c sẽ bị bỏ qua.")
+
+
+def _resolve_profile_path(profile_path: str) -> str:
+    """
+    Chuyển 'auto' thành đường dẫn thực theo OS và username hiện tại.
+    Windows: C:\\Users\\<username>\\AppData\\Local\\Google\\Chrome\\User Data
+    Mac:     ~/Library/Application Support/Google/Chrome
+    Linux:   ~/.config/google-chrome
+    """
+    if not profile_path or profile_path.strip().lower() in ("", "none", "off", "false"):
+        return ""
+    if profile_path.strip().lower() != "auto":
+        return profile_path.strip()   # Dùng nguyên giá trị trong config
+
+    # Auto-detect theo OS
+    home = Path.home()
+    import sys
+    if sys.platform == "win32":
+        candidate = home / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
+    elif sys.platform == "darwin":
+        candidate = home / "Library" / "Application Support" / "Google" / "Chrome"
+    else:  # Linux
+        candidate = home / ".config" / "google-chrome"
+
+    if candidate.exists():
+        logger.info(f"BrowserFetcher auto-detect: {candidate}")
+        return str(candidate)
+    else:
+        logger.warning(f"BrowserFetcher: không tìm thấy Chrome profile tại {candidate}")
+        return ""
 
 
 def is_configured() -> bool:

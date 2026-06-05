@@ -22,6 +22,19 @@ gemini:
   # Free tier mỗi key: 1,500 requests/day, 1M tokens/min
   # 3 keys = 4,500 requests/day ~ 1,500 POI/ngày
 
+chrome:
+  # Step 2c: Dùng Chrome thật với profile người dùng để tìm Opening Date
+  # Cần cài: pip install selenium
+  #
+  # profile_path:
+  #   "auto"          → tự detect theo máy hiện tại (Windows/Mac/Linux) ← khuyến nghị
+  #   ""              → tắt Step 2c hoàn toàn
+  #   "C:\Users\...\Google\Chrome\User Data"  → chỉ định cụ thể
+  profile_path: "auto"
+  profile_dir: "Default"   # "Default" | "Profile 1" | "Profile 2" | ...
+  offscreen_x: -3000        # Đẩy Chrome ra ngoài màn hình (user không thấy)
+  page_wait: 3              # Giây chờ trang load
+
 jira:
   url: "https://COMPANY.atlassian.net"  # cập nhật sau khi có access
   username: "your@email.com"

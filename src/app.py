@@ -64,10 +64,7 @@ else:
 
 # ── Setup Chrome browser (optional, Step 2c fallback) ───────────────────────────
 chrome_cfg  = config.get("chrome", {})
-chrome_path = chrome_cfg.get("profile_path", "")
-if chrome_path == "auto":
-    import os as _os
-    chrome_path = f"C:\\Users\\{_os.getenv('USERNAME','')}\\AppData\\Local\\Google\\Chrome\\User Data"
+chrome_path = chrome_cfg.get("profile_path", "")   # "auto" → tự detect, "" → tắt
 if chrome_path:
     browser_fetcher.setup_browser(
         profile_path=chrome_path,
@@ -75,9 +72,10 @@ if chrome_path:
         offscreen_x=chrome_cfg.get("offscreen_x", -3000),
         page_wait=chrome_cfg.get("page_wait", 3),
     )
-    print(f"[AutoPOI] Chrome browser: profile '{chrome_cfg.get('profile_dir','Default')}' (off-screen)")
-
-# ── FastAPI app ─────────────────────────────────────────────────────────────────
+    if browser_fetcher.is_configured():
+        print(f"[AutoPOI] Chrome browser: profile '{chrome_cfg.get('profile_dir','Default')}' (off-screen, Step 2c)")
+    else:
+        print("[AutoPOI] Chrome browser: không tìm thấy profile — Step 2c bị tắt")
 app = FastAPI(title="AutoPOI", version="2.0.0")
 
 STATIC_DIR = Path(__file__).parent / "static"
