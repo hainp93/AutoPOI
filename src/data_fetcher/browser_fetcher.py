@@ -93,33 +93,27 @@ def is_configured() -> bool:
 
 # ── Driver factory ────────────────────────────────────────────────────────────
 
-def _create_driver(visible: bool = False):
+def _create_driver(visible: bool = True):
     """
-    Tạo Chrome WebDriver:
-    - Mặc định: --headless=new (Chrome 112+) — không hiện cửa sổ, vẫn dùng profile/cookies
-    - visible=True: hiện cửa sổ ở (100,100) — dùng cho /debug/test-chrome
+    Tạo Chrome WebDriver — luôn mở ở góc màn hình (100, 100) cửa sổ nhỏ.
+    User thấy Chrome đang làm việc và dễ debug.
 
     Fallback chain:
-      1. headless + profile thật (cookies đầy đủ)
-      2. headless + không có profile (nếu profile bị lock)
-      3. visible + không có profile (emergency)
+      1. visible + profile thật (cookies đầy đủ)
+      2. visible + không có profile (nếu profile bị lock bởi Chrome đang mở)
     """
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
-        def _build_opts(with_profile: bool, headless: bool = True) -> Options:
+        def _build_opts(with_profile: bool) -> Options:
             opts = Options()
             if with_profile and _cfg["profile_path"]:
                 opts.add_argument(f'--user-data-dir={_cfg["profile_path"]}')
                 opts.add_argument(f'--profile-directory={_cfg["profile_dir"]}')
-            if headless and not visible:
-                # --headless=new: Chrome 112+ headless, vẫn support JS/cookies
-                opts.add_argument("--headless=new")
-            else:
-                # Visible mode cho debug/test
-                opts.add_argument("--window-position=100,100")
-                opts.add_argument("--window-size=1024,768")
+            # Cửa sổ nhỏ ở góc trên-trái — nhìn thấy được, không chiếm màn hình
+            opts.add_argument("--window-position=100,100")
+            opts.add_argument("--window-size=900,600")
             opts.add_argument("--no-first-run")
             opts.add_argument("--no-default-browser-check")
             opts.add_argument("--disable-notifications")
@@ -128,7 +122,6 @@ def _create_driver(visible: bool = False):
             opts.add_argument("--no-sandbox")
             opts.add_argument("--disable-dev-shm-usage")
             opts.add_argument("--disable-gpu")
-            opts.add_argument("--disable-software-rasterizer")
             opts.add_argument("--remote-debugging-port=0")
             # Bypass bot detection
             opts.add_argument("--disable-blink-features=AutomationControlled")
@@ -146,37 +139,32 @@ def _create_driver(visible: bool = False):
                 pass
             return driver
 
-        # ── Thử 1: headless + profile thật ──
+        # ── Thử 1: visible + profile thật (có cookies) ──
         try:
-            driver = webdriver.Chrome(options=_build_opts(with_profile=True, headless=not visible))
-            logger.info(f"Chrome headless started with profile '{_cfg['profile_dir']}'")
-            print(f"[BrowserFetcher] Chrome {'visible' if visible else 'headless'} started (profile={_cfg['profile_dir']})")
+            driver = webdriver.Chrome(options=_build_opts(with_profile=True))
+            logger.info(f"Chrome started at (100,100) with profile '{_cfg['profile_dir']}'")
+            print(f"[BrowserFetcher] Chrome opened at (100,100) — profile={_cfg['profile_dir']}")
             return _patch(driver)
         except Exception as e:
             err = str(e).lower()
             is_profile_conflict = (
                 "user data directory is already in use" in err
                 or "already in use" in err
-                or "devtoolsactiveport" in err   # profile lock thường gây lỗi này
+                or "devtoolsactiveport" in err
             )
             if is_profile_conflict:
-                logger.warning("Chrome profile bị lock → thử không có profile")
+                logger.warning("Chrome profile bị lock bởi Chrome đang mở → thử không có profile")
                 print("[BrowserFetcher] Profile locked → trying without profile")
             else:
                 logger.error(f"Chrome lỗi: {e}")
                 print(f"[BrowserFetcher] Chrome error: {e}")
                 raise
 
-        # ── Thử 2: headless + không có profile ──
-        try:
-            driver = webdriver.Chrome(options=_build_opts(with_profile=False, headless=True))
-            logger.info("Chrome headless started WITHOUT profile (no cookies)")
-            print("[BrowserFetcher] Chrome headless started (no profile, no cookies)")
-            return _patch(driver)
-        except Exception as e:
-            logger.error(f"Chrome headless (no profile) lỗi: {e}")
-            print(f"[BrowserFetcher] Chrome headless (no profile) error: {e}")
-            raise
+        # ── Thử 2: visible + không có profile ──
+        driver = webdriver.Chrome(options=_build_opts(with_profile=False))
+        logger.info("Chrome started at (100,100) WITHOUT profile (no cookies)")
+        print("[BrowserFetcher] Chrome opened (no profile — Chrome was already running)")
+        return _patch(driver)
 
     except ImportError:
         logger.error("selenium chưa được cài. Chạy: pip install selenium")
