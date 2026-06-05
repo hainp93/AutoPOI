@@ -135,6 +135,63 @@ async def chrome_status():
     }
 
 
+@app.get("/debug/test-chrome")
+async def test_chrome():
+    """
+    Mở Chrome ở vị trí NHÌN THẤY ĐƯỢC (x=100, y=100) để test.
+    Navigate sang Yelp trong 5 giây rồi tự đóng.
+    Dùng để xác nhận Chrome hoạt động trước khi chạy thật.
+    """
+    import threading
+    import time as _time
+
+    if not browser_fetcher.is_configured():
+        return {
+            "status": "error",
+            "message": "Chrome chưa configured — xem /debug/chrome-status để debug"
+        }
+
+    result = {}
+
+    def _test():
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            cfg = browser_fetcher._cfg
+            opts = Options()
+            if cfg["profile_path"]:
+                opts.add_argument(f'--user-data-dir={cfg["profile_path"]}')
+                opts.add_argument(f'--profile-directory={cfg["profile_dir"]}')
+            # Vị trí NHÌN THẤY — góc trên trái màn hình
+            opts.add_argument("--window-position=100,100")
+            opts.add_argument("--window-size=900,600")
+            opts.add_argument("--no-first-run")
+            opts.add_argument("--no-default-browser-check")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument("--disable-blink-features=AutomationControlled")
+            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+            opts.add_experimental_option("useAutomationExtension", False)
+            driver = webdriver.Chrome(options=opts)
+            driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            driver.get("https://www.yelp.com/search?find_desc=Valvoline&find_loc=New+York")
+            _time.sleep(5)
+            title = driver.title
+            driver.quit()
+            result["status"]  = "success"
+            result["title"]   = title
+            result["message"] = f"✓ Chrome hoạt động tốt! Title: '{title}'"
+        except Exception as e:
+            result["status"]  = "error"
+            result["message"] = str(e)
+
+    t = threading.Thread(target=_test, daemon=True)
+    t.start()
+    t.join(timeout=30)
+    return result
+
+
 @app.get("/")
 async def index():
     html_path = STATIC_DIR / "index.html"
