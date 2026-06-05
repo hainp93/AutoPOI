@@ -43,18 +43,23 @@ def setup_browser(profile_path: str, profile_dir: str = "Default",
       - "đường dẫn đầy đủ"  → dùng nguyên
       - "" / None  → không dùng browser (Step 2c bị tắt)
     """
-    resolved = _resolve_profile_path(profile_path)
+    if profile_path and profile_path.lower() == "guest":
+        _cfg["profile_path"] = "guest"
+    elif profile_path and profile_path.lower() == "auto":
+        _cfg["profile_path"] = _resolve_profile_path("auto")
+    else:
+        _cfg["profile_path"] = profile_path or ""
+        
     _cfg.update({
-        "profile_path": resolved,
         "profile_dir":  profile_dir,
         "offscreen_x":  offscreen_x,
         "page_wait":    page_wait,
     })
-    if resolved:
-        logger.info(f"BrowserFetcher: profile='{resolved}' / dir='{profile_dir}'")
-        print(f"[BrowserFetcher] Configured: {Path(resolved).name} / {profile_dir}")
+    if _cfg["profile_path"]:
+        logger.info(f"BrowserFetcher: profile='{_cfg['profile_path']}' / dir='{profile_dir}'")
+        print(f"[BrowserFetcher] Configured: {Path(_cfg['profile_path']).name} / {profile_dir}")
     else:
-        logger.info("BrowserFetcher: không có profile, Step 2c sẽ bị bỏ qua.")
+        logger.info("BrowserFetcher: không có profile, Chrome bị tắt.")
 
 
 def _resolve_profile_path(profile_path: str) -> str:
@@ -154,27 +159,30 @@ def _create_driver(visible: bool = True):
                 pass
             return driver
 
-        # ── Thử 1: visible + profile thật (có cookies) ──
-        try:
-            driver = webdriver.Chrome(options=_build_opts(with_profile=True))
-            logger.info(f"Chrome started at (100,100) with profile '{_cfg['profile_dir']}'")
-            print(f"[BrowserFetcher] Chrome opened at (100,100) - profile={_cfg['profile_dir']}")
-            return _patch(driver)
-        except Exception as e:
-            err = str(e).lower()
-            is_profile_conflict = (
-                "user data directory is already in use" in err
-                or "already in use" in err
-                or "devtoolsactiveport" in err
-                or "chrome instance exited" in err
-            )
-            if is_profile_conflict:
-                logger.warning("Chrome profile bị lock bởi Chrome đang mở -> thử không có profile")
-                print("[BrowserFetcher] Profile locked -> trying without profile")
-            else:
-                logger.error(f"Chrome lỗi: {e}")
-                print(f"[BrowserFetcher] Chrome error: {e}")
-                raise
+        # Nếu profile là guest, bỏ qua luôn đoạn thử kết nối profile
+        if _cfg.get("profile_path") != "guest":
+            # ── Thử 1: visible + profile thật (có cookies) ──
+            try:
+                driver = webdriver.Chrome(options=_build_opts(with_profile=True))
+                logger.info(f"Chrome started at (100,100) with profile '{_cfg['profile_dir']}'")
+                print(f"[BrowserFetcher] Chrome opened at (100,100) - profile={_cfg['profile_dir']}")
+                return _patch(driver)
+            except Exception as e:
+                err = str(e).lower()
+                is_profile_conflict = (
+                    "user data directory is already in use" in err
+                    or "already in use" in err
+                    or "devtoolsactiveport" in err
+                    or "chrome instance exited" in err
+                )
+                if is_profile_conflict:
+                    logger.warning("Chrome profile bị lock bởi Chrome đang mở -> thử không có profile")
+                    print("[BrowserFetcher] Profile locked -> trying without profile")
+                else:
+                    logger.error(f"Chrome lỗi: {e}")
+                    print(f"[BrowserFetcher] Chrome error: {e}")
+        else:
+            print("[BrowserFetcher] 'guest' mode selected -> bypassing profile login")
 
         # ── Thử 2: visible + không có profile ──
         driver = webdriver.Chrome(options=_build_opts(with_profile=False))

@@ -64,11 +64,13 @@ else:
 
 # ── Setup Chrome browser (Step 2c — primary method for Opening Date) ──────────
 chrome_cfg   = config.get("chrome", {})
-# Nếu không có section chrome HOẶC profile_path rỗng → tự động dùng "auto"
-chrome_path  = chrome_cfg.get("profile_path", "auto") or "auto"
+# Nếu không có section chrome → tự động dùng "auto"
+chrome_path  = chrome_cfg.get("profile_path", "auto")
+if chrome_path is None:
+    chrome_path = "auto"
 chrome_dir   = chrome_cfg.get("profile_dir",  "Default")
 offscreen_x  = chrome_cfg.get("offscreen_x",  -3000)
-page_wait    = chrome_cfg.get("page_wait",    4)
+page_wait    = chrome_cfg.get("page_wait",    5)
 
 print(f"[AutoPOI] Chrome config: profile_path='{chrome_path}', dir='{chrome_dir}'")
 browser_fetcher.setup_browser(

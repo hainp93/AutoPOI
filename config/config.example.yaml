@@ -13,9 +13,9 @@ gemini:
 
   # Hoặc thêm nhiều key (mỗi step dùng 1 key khác → tải đều ra 3 account free):
   api_keys:
-    - "YOUR_GEMINI_API_KEY_1"   # Step 1: Hours + Status + Category
-    - "YOUR_GEMINI_API_KEY_2"   # Step 2: Opening Date
-    - "YOUR_GEMINI_API_KEY_3"   # Step 3: Shopping Center
+    - "AIzaSyDWDtivp6jXuGkVBGUVgaQ38XSOwIPJrYA"   # Step 1: Hours + Status + Category
+    - "AIzaSyA6wvW2TdPTqLpORG0lDTeZ7kbgGVVbvB4"   # Step 2: Opening Date
+    - "AIzaSyBs4OWTgU5dn4nyMVrhu1OKTeqvoXohMDQ"   # Step 3: Shopping Center
 
   model: "gemini-2.5-flash"
   # Đăng ký tại: https://aistudio.google.com
@@ -28,9 +28,10 @@ chrome:
   #
   # profile_path:
   #   "auto"          → tự detect theo máy hiện tại (Windows/Mac/Linux) ← khuyến nghị
-  #   ""              → tắt Step 2c hoàn toàn
-  #   "C:\Users\...\Google\Chrome\User Data"  → chỉ định cụ thể
-  profile_path: "auto"
+  #   "guest"         -> luôn dùng Chrome khách (nhanh nhất)
+  #   ""              -> tắt Chrome hoàn toàn
+  #   "C:\Users\...\Google\Chrome\User Data"  -> chỉ định cụ thể
+  profile_path: "guest"
   profile_dir: "Default"   # "Default" | "Profile 1" | "Profile 2" | ...
   offscreen_x: -3000        # Đẩy Chrome ra ngoài màn hình (user không thấy)
   page_wait: 3              # Giây chờ trang load
