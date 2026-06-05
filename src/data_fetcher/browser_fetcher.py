@@ -346,13 +346,22 @@ def _google_grand_opening_search(driver, name: str, city_state: str) -> dict:
         if result and result.get("opening_date"):
             return result
 
-        # ── Click vào kết quả Yelp ──
-        yelp_link = _find_google_result_link(driver, "yelp.com")
-        if yelp_link:
-            logger.debug(f"Google → Yelp: {yelp_link[:70]}")
-            result = _try_yelp(driver, yelp_link)
-            if result and result.get("opening_date"):
-                return result
+        # ── Tìm và click các link ưu tiên (Facebook, Instagram, Yelp, News) ──
+        # Mở rộng chiến lược: tìm các nền tảng mạng xã hội thường đăng lễ khai trương
+        for platform in ["facebook.com", "instagram.com", "twitter.com", "yelp.com"]:
+            platform_link = _find_google_result_link(driver, platform)
+            if platform_link:
+                logger.debug(f"Google -> {platform}: {platform_link[:70]}")
+                if "facebook" in platform:
+                    result = _try_facebook(driver, platform_link, name)
+                elif "yelp" in platform:
+                    result = _try_yelp(driver, platform_link)
+                else:
+                    # Các mạng xã hội khác dùng hàm đọc news/text chung vì chúng ta đọc text
+                    result = _try_news_article(driver, platform_link, name)
+                
+                if result and result.get("opening_date"):
+                    return result
 
         # ── Click vào kết quả news đầu tiên ──
         news_link = _find_google_news_link(driver)
