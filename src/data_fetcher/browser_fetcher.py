@@ -559,7 +559,7 @@ def _try_news_article(driver, url: str, poi_name: str) -> dict:
         r'|ribbon[\s-]?cutting)\s+(?:on\s+)?'
         r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?'
         r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
-        r'\s+\d{1,2},?\s+\d{4}|\d{4})'
+        r'\s+\d{1,2},?\s+(?:19|20)\d{2}|(?:19|20)\d{2})'
     )
     m = re.search(pattern, body_text, re.IGNORECASE)
     if m:
@@ -591,21 +591,25 @@ def _try_facebook(driver, url: str, poi_name: str) -> dict:
     body_text = _get_body_text(driver)
     pattern = (
         r'(?:grand\s+opening|now\s+open|we\s+are\s+open|doors\s+open)'
-        r'.*?'
+        r'.{0,100}?'
         r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?'
         r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
-        r'\s+\d{1,2},?\s+\d{4}|\d{4})'
+        r'\s+\d{1,2},?\s+(?:19|20)\d{2}|(?:19|20)\d{2})'
     )
-    m = re.search(pattern, body_text, re.IGNORECASE | re.DOTALL)
+    m = re.search(pattern, body_text, re.IGNORECASE)
     if m:
         found_date = m.group(1).strip()
         iso = _parse_text_date(found_date)
-        return {
-            "opening_date":            iso or found_date,
-            "opening_date_source":     actual_url,
-            "opening_date_confidence": "high" if iso else "medium",
-            "opening_date_evidence":   f"Facebook grand opening post: '{found_date}'",
-        }
+        # Kiểm tra thêm ngày phải <= hôm nay
+        import datetime
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        if iso and iso <= today_str:
+            return {
+                "opening_date":            iso,
+                "opening_date_source":     actual_url,
+                "opening_date_confidence": "high",
+                "opening_date_evidence":   f"Facebook grand opening post: '{found_date}'",
+            }
     return {}
 
 
