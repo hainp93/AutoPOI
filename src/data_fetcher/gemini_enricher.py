@@ -263,7 +263,9 @@ Rules:
     return {
         "opening_hours":        data.get("opening_hours", "") or "",
         "opening_hours_source": _pick_source(urls, data.get("opening_hours_source", ""),
-                                             ["hour", "schedule", "time", "store", "location"], block_aggregators=True),
+                                             ["hour", "schedule", "time", "store", "location"], 
+                                             block_aggregators=True,
+                                             official_website=data.get("official_website", "")),
         "is_closed":            bool(data.get("is_closed", False)),
         "closing_date":         data.get("closing_date"),
         "closing_date_source":  "",
@@ -783,12 +785,14 @@ def _extract_urls_from_text(text: str) -> list:
 
 
 def _pick_source(grounding_urls: list, gemini_suggested: str,
-                 keywords: list, block_aggregators: bool = False) -> str:
+                 keywords: list, block_aggregators: bool = False,
+                 official_website: str = "") -> str:
     """
     Chọn URL nguồn tốt nhất:
     1. Tìm trong grounding URLs theo keyword
-    2. Nếu không có, lấy URL hợp lệ đầu tiên do Google trả về
-    3. Cuối cùng mới dùng URL Gemini suggest (để tránh hallucination)
+    2. Nếu có official_website từ Gemini, ưu tiên dùng (thường chính xác hơn link Maps ngẫu nhiên)
+    3. Nếu không có, lấy URL hợp lệ đầu tiên do Google trả về (tránh link Maps nếu có thể)
+    4. Cuối cùng mới dùng URL Gemini suggest (để tránh hallucination)
     """
     aggregator_domains = ("carfax.com", "yelp.com", "yellowpages.com", "foursquare.com", "mapquest.com", "tripadvisor.com")
     
@@ -805,9 +809,18 @@ def _pick_source(grounding_urls: list, gemini_suggested: str,
         if any(kw in url.lower() for kw in keywords):
             return url
             
+    # Ưu tiên trang web chính thức do Gemini tìm được (ví dụ store.vioc.com) 
+    # thay vì lấy link Google Maps ngẫu nhiên của chi nhánh khác
+    if official_website and _is_allowed(official_website) and "google.com" not in official_website:
+        return official_website
+
     # Nếu không match keyword nhưng có URL hợp lệ từ Google Search, lấy cái đầu tiên
     # Google Search kết quả đầu tiên thường là website chính thức
     if valid:
+        # Cố gắng tránh Google Maps nếu có link khác hợp lệ hơn
+        for v in valid:
+            if "google.com/maps" not in v:
+                return v
         return valid[0]
         
     # Dùng URL Gemini suggest nếu nó hợp lệ (fallback cuối cùng)
