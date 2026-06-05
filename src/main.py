@@ -24,7 +24,9 @@ from rich.prompt import Prompt
 from rich.rule import Rule
 
 from src.data_fetcher.geocoder import geocode, build_ve_url, build_gm_url, build_gm_search_url
-from src.data_fetcher.gemini_enricher import setup_gemini, enrich_poi, format_hours_for_display
+from src.data_fetcher.gemini_enricher import (
+    setup_gemini, setup_gemini_multi, enrich_poi, format_hours_for_display
+)
 
 console = Console()
 
@@ -207,15 +209,23 @@ def main():
 
     # Load config
     config = load_config(args.config)
-    gemini_key = config.get("gemini", {}).get("api_key", "")
-    gemini_model = config.get("gemini", {}).get("model", "gemini-2.0-flash")
+    gemini_cfg    = config.get("gemini", {})
+    gemini_model_name = gemini_cfg.get("model", "gemini-2.5-flash")
+    gemini_api_keys   = gemini_cfg.get("api_keys", [])
+    gemini_api_key    = gemini_cfg.get("api_key", "")
 
-    if not gemini_key or gemini_key == "YOUR_GEMINI_API_KEY":
+    if gemini_api_keys and any(k and not k.startswith("YOUR_") for k in gemini_api_keys):
+        # Multi-key mode
+        valid_keys = [k for k in gemini_api_keys if k and not k.startswith("YOUR_")]
+        model = setup_gemini_multi(valid_keys, gemini_model_name)
+        console.print(f"[green]✓ Multi-key mode:[/green] {len(valid_keys)} key(s) — mỗi step dùng 1 key riêng")
+    elif gemini_api_key and gemini_api_key != "YOUR_GEMINI_API_KEY":
+        model = setup_gemini(gemini_api_key, gemini_model_name)
+        console.print("[yellow]⚠ Single-key mode:[/yellow] 1 key dùng cho cả 3 step")
+    else:
         console.print("[red]❌ Chưa cấu hình Gemini API key trong config.yaml![/red]")
+        console.print("   Điền [cyan]api_key[/cyan] (1 key) hoặc [cyan]api_keys[/cyan] (list 3 key) trong section [gemini]")
         sys.exit(1)
-
-    # Setup Gemini
-    model = setup_gemini(gemini_key, gemini_model)
 
     # Single mode hoặc interactive mode
     if args.name and args.address:

@@ -20,7 +20,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.data_fetcher.geocoder import geocode, build_ve_url, build_gm_url, build_gm_search_url
-from src.data_fetcher.gemini_enricher import setup_gemini, enrich_poi, enrich_poi_stream
+from src.data_fetcher.gemini_enricher import (
+    setup_gemini, setup_gemini_multi, enrich_poi, enrich_poi_stream
+)
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -36,14 +38,26 @@ def load_config():
 
 
 config = load_config()
-gemini_key = config.get("gemini", {}).get("api_key", "")
-gemini_model_name = config.get("gemini", {}).get("model", "gemini-2.0-flash")
+gemini_cfg = config.get("gemini", {})
+gemini_model_name = gemini_cfg.get("model", "gemini-2.0-flash")
 
-if not gemini_key or gemini_key == "YOUR_GEMINI_API_KEY":
-    print("[ERROR] Chua dien Gemini API key vao config/config.yaml!")
+# Ư u tiên dùng api_keys (multi-key) nếu có, fallback về api_key (single)
+gemini_api_keys = gemini_cfg.get("api_keys", [])
+gemini_api_key  = gemini_cfg.get("api_key", "")
+
+if gemini_api_keys and any(k and not k.startswith("YOUR_") for k in gemini_api_keys):
+    # Multi-key mode: mỗi step dùng 1 key riêng
+    valid_keys = [k for k in gemini_api_keys if k and not k.startswith("YOUR_")]
+    gemini_model = setup_gemini_multi(valid_keys, gemini_model_name)
+    print(f"[AutoPOI] Multi-key mode: {len(valid_keys)} Gemini API key(s) — mỗi step dùng 1 key riêng")
+elif gemini_api_key and gemini_api_key != "YOUR_GEMINI_API_KEY":
+    # Single-key mode (backward compat)
+    gemini_model = setup_gemini(gemini_api_key, gemini_model_name)
+    print("[AutoPOI] Single-key mode: 1 Gemini API key dùng cho cả 3 step")
+else:
+    print("[ERROR] Chưa điền Gemini API key vào config/config.yaml!")
+    print("        Điền api_key (1 key) hoặc api_keys (list 3 key) trong section [gemini]")
     sys.exit(1)
-
-gemini_model = setup_gemini(gemini_key, gemini_model_name)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(title="AutoPOI", version="2.0.0")
@@ -167,7 +181,10 @@ async def lookup_poi(req: POIRequest):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "model": gemini_model_name, "version": "2.0.0"}
+    mode = "multi-key" if isinstance(gemini_model, dict) else "single-key"
+    key_count = len(gemini_model["keys"]) if isinstance(gemini_model, dict) else 1
+    return {"status": "ok", "model": gemini_model_name,
+            "mode": mode, "keys": key_count, "version": "2.1.0"}
 
 
 if __name__ == "__main__":

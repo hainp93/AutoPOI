@@ -8,10 +8,19 @@ google:
   # Free tier: $200 credit/tháng ≈ 5,800 POI miễn phí
 
 gemini:
-  api_key: "YOUR_GEMINI_API_KEY"
-  model: "gemini-2.0-flash"
+  # Dùng 1 key:
+  api_key: "YOUR_GEMINI_API_KEY_1"
+
+  # Hoặc thêm nhiều key (mỗi step dùng 1 key khác → tải đều ra 3 account free):
+  api_keys:
+    - "YOUR_GEMINI_API_KEY_1"   # Step 1: Hours + Status + Category
+    - "YOUR_GEMINI_API_KEY_2"   # Step 2: Opening Date
+    - "YOUR_GEMINI_API_KEY_3"   # Step 3: Shopping Center
+
+  model: "gemini-2.5-flash"
   # Đăng ký tại: https://aistudio.google.com
-  # Free tier: đủ dùng cho quy mô 560 POI/tháng
+  # Free tier mỗi key: 1,500 requests/day, 1M tokens/min
+  # 3 keys = 4,500 requests/day ~ 1,500 POI/ngày
 
 jira:
   url: "https://COMPANY.atlassian.net"  # cập nhật sau khi có access

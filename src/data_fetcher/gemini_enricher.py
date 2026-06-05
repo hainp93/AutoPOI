@@ -18,18 +18,54 @@ logger = logging.getLogger(__name__)
 
 
 def setup_gemini(api_key: str, model: str = "gemini-2.0-flash"):
-    """Khởi tạo Gemini client."""
+    """Khởi tạo Gemini client từ 1 key (backward compat)."""
     client = genai.Client(api_key=api_key)
     return client, model
+
+
+def setup_gemini_multi(api_keys: list, model: str = "gemini-2.0-flash"):
+    """
+    Khởi tạo 3 Gemini client riêng biệt từ danh sách keys.
+    Mỗi step sẽ dùng 1 client riêng để phân tải đều ra 3 account free.
+    Nếu ít hơn 3 key thì reuse key đầu tiên cho các step thiếu.
+    """
+    keys = list(api_keys) if api_keys else []
+    # Pad lên đúng 3 key
+    while len(keys) < 3:
+        keys.append(keys[0] if keys else "")
+    clients = [genai.Client(api_key=k) for k in keys[:3]]
+    return {
+        "clients": clients,       # [client_step1, client_step2, client_step3]
+        "model": model,
+        "keys": keys[:3],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def enrich_poi_stream(model_tuple, name: str, address: str) -> Iterator[dict]:
+def _resolve_clients(model_config) -> tuple:
+    """
+    Trả về (client1, client2, client3, model_name) từ model_config.
+    model_config có thể là:
+      - tuple (client, model_name)          ← backward compat (1 key)
+      - dict {clients, model, keys}         ← multi-key mode
+    """
+    if isinstance(model_config, dict):
+        clients = model_config["clients"]
+        model_name = model_config["model"]
+        return clients[0], clients[1], clients[2], model_name
+    else:
+        # Backward compat: tuple (client, model_name)
+        client, model_name = model_config
+        return client, client, client, model_name
+
+
+def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
     """
     Tìm kiếm POI theo 3 bước, yield từng kết quả trung gian.
+    Mỗi bước dùng 1 Gemini client riêng (phân tải đều ra 3 account free).
 
     Yields dicts:
       {"step": 1, "status": "running", "label": "..."}
@@ -37,14 +73,14 @@ def enrich_poi_stream(model_tuple, name: str, address: str) -> Iterator[dict]:
       ...
       {"step": "final", "data": {full_result}}
     """
-    client, model_name = model_tuple
+    client1, client2, client3, model_name = _resolve_clients(model_config)
     result = _empty_result()
 
-    # ── Step 1: Hours + Status + Category ─────────────────────────────────────
+    # ── Step 1: Hours + Status + Category (dùng key #1) ───────────────────────
     yield {"step": 1, "status": "running",
            "label": "Tìm giờ mở cửa, danh mục và website chính thức..."}
     try:
-        s1 = _step1_hours_status_category(client, model_name, name, address)
+        s1 = _step1_hours_status_category(client1, model_name, name, address)
         result.update(s1)
         yield {"step": 1, "status": "done",
                "label": "Tìm được giờ mở cửa",
@@ -56,11 +92,11 @@ def enrich_poi_stream(model_tuple, name: str, address: str) -> Iterator[dict]:
         logger.error(f"Step 1 error: {e}")
         yield {"step": 1, "status": "error", "label": f"Step 1 lỗi: {e}"}
 
-    # ── Step 2: Opening Date / Closing Date ───────────────────────────────────
+    # ── Step 2: Opening Date / Closing Date (dùng key #2) ────────────────────
     yield {"step": 2, "status": "running",
            "label": "Tìm ngày khai trương và ngày đóng cửa..."}
     try:
-        s2 = _step2_dates(client, model_name, name, address,
+        s2 = _step2_dates(client2, model_name, name, address,
                           official_website=result.get("official_website", ""))
         result.update(s2)
         # Merge grounding URLs
@@ -78,11 +114,11 @@ def enrich_poi_stream(model_tuple, name: str, address: str) -> Iterator[dict]:
         logger.error(f"Step 2 error: {e}")
         yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
 
-    # ── Step 3: Shopping Center + Site Plan ───────────────────────────────────
+    # ── Step 3: Shopping Center + Site Plan (dùng key #3) ────────────────────
     yield {"step": 3, "status": "running",
            "label": "Kiểm tra Shopping Center và Site Plan..."}
     try:
-        s3 = _step3_shopping_center(client, model_name, name, address)
+        s3 = _step3_shopping_center(client3, model_name, name, address)
         result.update(s3)
         for u in s3.get("grounding_urls", []):
             if u not in result["grounding_urls"]:
@@ -99,10 +135,10 @@ def enrich_poi_stream(model_tuple, name: str, address: str) -> Iterator[dict]:
     yield {"step": "final", "data": result}
 
 
-def enrich_poi(model_tuple, name: str, address: str) -> dict:
+def enrich_poi(model_config, name: str, address: str) -> dict:
     """Backward-compat wrapper — chạy tuần tự, trả về result cuối."""
     result = _empty_result()
-    for event in enrich_poi_stream(model_tuple, name, address):
+    for event in enrich_poi_stream(model_config, name, address):
         if event.get("step") == "final":
             result = event["data"]
     return result
