@@ -228,21 +228,9 @@ def browser_find_opening_date(name: str, address: str,
     print(f"[BrowserFetcher] Searching for: '{name}' in '{city_state}'")
 
     try:
-        # ── Chiến lược 1: Tìm Yelp trực tiếp ──
-        print("[BrowserFetcher] Strategy 1: Direct Yelp search...")
-        result = _yelp_direct_search(driver, name, city_state)
-        if result and result.get("opening_date"):
-            print(f"[BrowserFetcher] ✓ Found via Yelp search: {result['opening_date']}")
-            return result
-
-        # ── Chiến lược 2: Google search "grand opening" ──
-        print("[BrowserFetcher] Strategy 2: Google 'grand opening' search...")
-        result = _google_grand_opening_search(driver, name, city_state)
-        if result and result.get("opening_date"):
-            print(f"[BrowserFetcher] ✓ Found via Google search: {result['opening_date']}")
-            return result
-
-        # ── Chiến lược 3 & 4: Visit Gemini-provided sources ──
+        # ── Chiến lược 1: Truy cập thẳng các link do Gemini cung cấp ──
+        # Gemini đã search Google API và có sẵn URL chính xác → ưu tiên cao nhất
+        print("[BrowserFetcher] Strategy 1: Visit Gemini provided URLs...")
         sources = candidate_sources or []
         yelp_srcs = [s for s in sources if _is_domain(s, "yelp")]
         news_srcs = [s for s in sources
@@ -256,13 +244,13 @@ def browser_find_opening_date(name: str, address: str,
                 continue
             try:
                 if _is_domain(src, "yelp"):
-                    print(f"[BrowserFetcher] Strategy 3: Yelp redirect {url[:50]}...")
+                    print(f"[BrowserFetcher]   → Yelp: {url[:60]}...")
                     result = _try_yelp(driver, url)
                 elif _is_domain(src, "facebook"):
-                    print(f"[BrowserFetcher] Strategy 4: Facebook {url[:50]}...")
+                    print(f"[BrowserFetcher]   → Facebook: {url[:60]}...")
                     result = _try_facebook(driver, url, name)
                 else:
-                    print(f"[BrowserFetcher] Strategy 4: News {url[:50]}...")
+                    print(f"[BrowserFetcher]   → News: {url[:60]}...")
                     result = _try_news_article(driver, url, name)
 
                 if result and result.get("opening_date"):
@@ -272,6 +260,13 @@ def browser_find_opening_date(name: str, address: str,
             except Exception as e:
                 logger.warning(f"Browser lỗi trên {url[:60]}: {e}")
                 continue
+
+        # ── Chiến lược 2: Google search "grand opening" nếu links Gemini fail ──
+        print("[BrowserFetcher] Strategy 2: Google 'grand opening' search...")
+        result = _google_grand_opening_search(driver, name, city_state)
+        if result and result.get("opening_date"):
+            print(f"[BrowserFetcher] ✓ Found via Google search: {result['opening_date']}")
+            return result
 
         print("[BrowserFetcher] ✗ Không tìm được ngày sau khi thử tất cả strategies.")
         return {}
