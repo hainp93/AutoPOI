@@ -15,7 +15,7 @@ from typing import Iterator
 from urllib.parse import urlparse
 from google import genai
 from google.genai import types
-from data_fetcher import browser_fetcher
+from . import browser_fetcher
 
 logger = logging.getLogger(__name__)
 
