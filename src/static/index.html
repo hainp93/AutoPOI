@@ -25,6 +25,7 @@
       --red:       #ef4444;
       --yellow:    #f59e0b;
       --magenta:   #d946ef;
+      --orange:    #f97316;
       --text:      #e2e8f0;
       --muted:     #64748b;
       --radius:    12px;
@@ -413,6 +414,59 @@
       border-radius: 50%; animation: spin 0.7s linear infinite;
       vertical-align: middle;
     }
+    /* ── Brain Selector ── */
+    .brain-selector {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      padding: 4px 6px;
+      margin-top: 14px;
+    }
+    .brain-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 99px;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      color: var(--muted);
+      background: transparent;
+      transition: all 0.25s ease;
+    }
+    .brain-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+    .brain-btn.active-gemini {
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      box-shadow: 0 0 16px rgba(79,140,255,0.35);
+    }
+    .brain-btn.active-searxng {
+      color: #fff;
+      background: linear-gradient(135deg, var(--orange), var(--magenta));
+      box-shadow: 0 0 16px rgba(249,115,22,0.35);
+    }
+    .brain-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .brain-dot-gemini  { background: var(--accent); }
+    .brain-dot-searxng { background: var(--orange); }
+    /* Engine badge in result */
+    .engine-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10px; font-weight: 700; letter-spacing: .06em;
+      text-transform: uppercase; padding: 2px 8px;
+      border-radius: 99px; border: 1px solid;
+    }
+    .engine-badge-gemini  { color: var(--accent);  border-color: var(--accent);  background: rgba(79,140,255,0.1);  }
+    .engine-badge-searxng { color: var(--orange); border-color: var(--orange); background: rgba(249,115,22,0.1); }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -423,6 +477,15 @@
   <div class="header">
     <div class="logo"><span class="logo-icon">📍</span> AutoPOI</div>
     <p class="subtitle">Venue Data Assistant — Tự động tìm thông tin POI cho Placer.ai</p>
+    <!-- Brain Selector -->
+    <div class="brain-selector" id="brain-selector">
+      <button id="btn-brain-gemini" class="brain-btn active-gemini" onclick="selectBrain('gemini')">
+        <span class="brain-dot brain-dot-gemini"></span> 🧠 Gemini
+      </button>
+      <button id="btn-brain-searxng" class="brain-btn" onclick="selectBrain('searxng')">
+        <span class="brain-dot brain-dot-searxng"></span> 🦙 SearXNG + Ollama
+      </button>
+    </div>
   </div>
 
   <!-- Input Card -->
@@ -680,7 +743,10 @@
 
     <!-- Nguồn thực tế từ Google Search -->
     <div class="card" id="sources-card" style="display:none;">
-      <div class="section-title" style="margin-bottom:10px;">🔗 Nguồn tìm thấy (Google Search grounding)</div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <div class="section-title" style="margin-bottom:0;">🔗 Nguồn tìm thấy</div>
+        <span id="engine-badge-display" class="engine-badge engine-badge-gemini" style="display:none;"></span>
+      </div>
       <div id="sources-list" style="display:flex;flex-direction:column;gap:6px;"></div>
     </div>
 
@@ -692,6 +758,43 @@
 
 <script>
   let currentData = null;
+  let selectedBrain = 'gemini';  // 'gemini' | 'searxng'
+
+  // ── Load engine status từ server ──────────────────────────────────────────
+  async function loadEngineStatus() {
+    try {
+      const resp = await fetch('/api/engines');
+      const data = await resp.json();
+      // Đặt brain mặc định theo config server
+      selectedBrain = data.current || 'gemini';
+      // Disable nút nếu engine không available
+      if (!data.gemini?.available) {
+        document.getElementById('btn-brain-gemini').disabled = true;
+        document.getElementById('btn-brain-gemini').title = 'Gemini không khả dụng (chưa cấu hình API key)';
+      }
+      if (!data.searxng?.available) {
+        document.getElementById('btn-brain-searxng').disabled = true;
+        document.getElementById('btn-brain-searxng').title = 'SearXNG+Ollama chưa cấu hình trong config.yaml';
+      }
+      _updateBrainUI();
+    } catch(e) {
+      console.warn('Không tải được engine status:', e);
+    }
+  }
+  loadEngineStatus();
+
+  // ── Brain selection ────────────────────────────────────────────────────────
+  function selectBrain(engine) {
+    selectedBrain = engine;
+    _updateBrainUI();
+  }
+
+  function _updateBrainUI() {
+    const btnG = document.getElementById('btn-brain-gemini');
+    const btnS = document.getElementById('btn-brain-searxng');
+    btnG.className = 'brain-btn' + (selectedBrain === 'gemini'  ? ' active-gemini'  : '');
+    btnS.className = 'brain-btn' + (selectedBrain === 'searxng' ? ' active-searxng' : '');
+  }
 
   // ── Enter key support ──────────────────────────────────────────────────────
   ['poi-name', 'poi-address'].forEach(id => {
@@ -750,7 +853,7 @@
     hideError();
     resetStepCards();
 
-    const params = new URLSearchParams({ name, address });
+    const params = new URLSearchParams({ name, address, engine: selectedBrain });
     const evtSource = new EventSource(`/api/lookup/stream?${params}`);
     activeSource = evtSource;
 
@@ -1015,7 +1118,19 @@
       : (d.grounding_urls || []).map(u => ({ url: u, title: '', display_url: u, favicon: '', domain: '', step: 0 }));
 
     if (sources.length > 0) {
-      const stepLabel = { 1: '🕐 Giờ mở cửa', 2: '📅 Ngày khai trương', 3: '🏬 Shopping Center', 0: '🔍 Nguồn khác' };
+      // Engine badge
+      const engineUsed = d.engine_used || selectedBrain;
+      const badgeEl = document.getElementById('engine-badge-display');
+      if (engineUsed === 'searxng') {
+        badgeEl.textContent = '🦙 SearXNG + Ollama';
+        badgeEl.className = 'engine-badge engine-badge-searxng';
+      } else {
+        badgeEl.textContent = '🧠 Gemini Grounding';
+        badgeEl.className = 'engine-badge engine-badge-gemini';
+      }
+      badgeEl.style.display = 'inline-flex';
+
+      const stepLabel = { 1: '🔍 Tìm kiếm web', 2: '🌐 Tải trang / Chrome', 3: '🦙 Phân tích AI', 0: '🔍 Nguồn khác' };
       // Group by step
       const groups = {};
       sources.forEach(src => {

@@ -26,6 +26,7 @@ from src.data_fetcher.gemini_enricher import (
     setup_gemini, setup_gemini_multi, enrich_poi, enrich_poi_stream
 )
 from src.data_fetcher import browser_fetcher
+from src.data_fetcher import searxng_enricher
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -48,19 +49,49 @@ gemini_model_name = gemini_cfg.get("model", "gemini-2.0-flash")
 gemini_api_keys = gemini_cfg.get("api_keys", [])
 gemini_api_key  = gemini_cfg.get("api_key", "")
 
-if gemini_api_keys and any(k and not k.startswith("YOUR_") for k in gemini_api_keys):
-    # Multi-key mode: mỗi step dùng 1 key riêng
-    valid_keys = [k for k in gemini_api_keys if k and not k.startswith("YOUR_")]
-    gemini_model = setup_gemini_multi(valid_keys, gemini_model_name)
-    print(f"[AutoPOI] Multi-key mode: {len(valid_keys)} Gemini API key(s) — mỗi step dùng 1 key riêng")
-elif gemini_api_key and gemini_api_key != "YOUR_GEMINI_API_KEY":
-    # Single-key mode (backward compat)
-    gemini_model = setup_gemini(gemini_api_key, gemini_model_name)
-    print("[AutoPOI] Single-key mode: 1 Gemini API key dùng cho cả 3 step")
-else:
-    print("[ERROR] Chưa điền Gemini API key vào config/config.yaml!")
-    print("        Điền api_key (1 key) hoặc api_keys (list 3 key) trong section [gemini]")
-    sys.exit(1)
+# ── Detect active engine ─────────────────────────────────────────────────────
+active_engine = config.get("engine", "gemini").lower().strip()
+
+gemini_model = None
+searxng_cfg  = None
+
+if active_engine == "gemini" or active_engine not in ("searxng",):
+    active_engine = "gemini"
+    if gemini_api_keys and any(k and not k.startswith("YOUR_") for k in gemini_api_keys):
+        valid_keys = [k for k in gemini_api_keys if k and not k.startswith("YOUR_")]
+        gemini_model = setup_gemini_multi(valid_keys, gemini_model_name)
+        print(f"[AutoPOI] 🧠 Brain: Gemini | Multi-key mode: {len(valid_keys)} key(s)")
+    elif gemini_api_key and gemini_api_key != "YOUR_GEMINI_API_KEY":
+        gemini_model = setup_gemini(gemini_api_key, gemini_model_name)
+        print("[AutoPOI] 🧠 Brain: Gemini | Single-key mode")
+    else:
+        print("[ERROR] engine=gemini nhưng chưa điền Gemini API key!")
+        sys.exit(1)
+elif active_engine == "searxng":
+    raw_sx   = config.get("searxng", {})
+    raw_ol   = config.get("ollama",  {})
+    searxng_cfg = searxng_enricher.build_config({
+        "searxng_url":    raw_sx.get("url",   "http://localhost:8888"),
+        "max_results":    raw_sx.get("max_results", 5),
+        "ollama_url":     raw_ol.get("url",   "http://localhost:11434"),
+        "ollama_model":   raw_ol.get("model", "llama3.1:8b"),
+        "ollama_timeout": raw_ol.get("timeout", 120),
+    })
+    # Kiểm tra dịch vụ
+    svc = searxng_enricher.check_services(searxng_cfg)
+    sx_ok = "✓" if svc["searxng"] else "✗"
+    ol_ok = "✓" if svc["ollama"]  else "✗"
+    models = svc.get("ollama_models", [])
+    print(f"[AutoPOI] 🧊 Brain: SearXNG+Ollama")
+    print(f"[AutoPOI]   SearXNG  {sx_ok} {searxng_cfg['searxng_url']}")
+    print(f"[AutoPOI]   Ollama   {ol_ok} {searxng_cfg['ollama_url']} | model: {searxng_cfg['ollama_model']}")
+    if models:
+        print(f"[AutoPOI]   Models available: {', '.join(models[:5])}")
+    if svc["errors"]:
+        for err in svc["errors"]:
+            print(f"[AutoPOI] ⚠️  {err}")
+    if not svc["searxng"] or not svc["ollama"]:
+        print("[AutoPOI] ⚠️  Một số dịch vụ chưa sẵn sàng. Khởi động vẫn tiếp tục nhưng có thể lỗi khi tra cứu.")
 
 # ── Setup Chrome browser (Step 2c — primary method for Opening Date) ──────────
 chrome_cfg   = config.get("chrome", {})
@@ -88,7 +119,7 @@ else:
     print(f"[AutoPOI]   Kiểm tra Chrome đã được cài chưa, hoặc đặt chrome.profile_path trong config.yaml")
 
 
-app = FastAPI(title="AutoPOI", version="2.0.0")
+app = FastAPI(title="AutoPOI", version="3.0.0")
 
 STATIC_DIR = Path(__file__).parent / "static"
 STATIC_DIR.mkdir(exist_ok=True)
@@ -98,6 +129,12 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 class POIRequest(BaseModel):
     name: str
     address: str
+
+
+class POIStreamRequest(BaseModel):
+    name: str
+    address: str
+    engine: str = ""   # override engine from config
 
 
 def _build_geo_info(name: str, address: str, geo: dict | None) -> dict:
@@ -191,13 +228,14 @@ async def index():
 
 # ── SSE Streaming endpoint (new) ──────────────────────────────────────────────
 @app.get("/api/lookup/stream")
-async def lookup_stream(name: str, address: str):
+async def lookup_stream(name: str, address: str, engine: str = ""):
     """
     Server-Sent Events endpoint — stream kết quả từng bước.
     Frontend dùng EventSource để nhận updates realtime.
     """
     name = name.strip()
     address = address.strip()
+    use_engine = (engine or active_engine).lower()
 
     if not name or not address:
         raise HTTPException(status_code=400, detail="Can nhap ca ten va dia chi")
@@ -206,7 +244,7 @@ async def lookup_stream(name: str, address: str):
         def send(data: dict) -> str:
             return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-        # ── Step 0: Geocoding ─────────────────────────────────────────────────
+        # ── Step 0: Geocoding ─────────────────────────────────────────────────────
         yield send({"step": 0, "status": "running",
                     "label": "Geocoding địa chỉ..."})
         geo = await asyncio.get_event_loop().run_in_executor(
@@ -217,18 +255,27 @@ async def lookup_stream(name: str, address: str):
                     "label": "Geocoding xong",
                     "partial": geo_info})
 
-        # ── Steps 1-3: Gemini enrichment — stream real-time qua queue ─────────
+        # ── Steps 1-3: Enrichment — route đúng engine ──────────────────────
         full_result = {"name": name, "address": address, **geo_info}
+        full_result["engine_used"] = use_engine
         _SENTINEL = object()
         q: queue.Queue = queue.Queue()
 
         def _producer():
             """Chạy trong thread riêng, đẩy từng event vào queue ngay khi có."""
             try:
-                for event in enrich_poi_stream(gemini_model, name, address):
-                    q.put(event)
+                if use_engine == "searxng" and searxng_cfg:
+                    for event in searxng_enricher.enrich_poi_stream_searxng(
+                        searxng_cfg, name, address
+                    ):
+                        q.put(event)
+                else:
+                    for event in enrich_poi_stream(gemini_model, name, address):
+                        q.put(event)
+            except Exception as e:
+                q.put({"step": "error", "status": "error", "label": str(e)})
             finally:
-                q.put(_SENTINEL)  # báo hiệu kết thúc
+                q.put(_SENTINEL)
 
         threading.Thread(target=_producer, daemon=True).start()
 
@@ -279,12 +326,37 @@ async def lookup_poi(req: POIRequest):
     })
 
 
+@app.get("/api/engines")
+async def engines_status():
+    """Trả về danh sách engines và trạng thái dịch vụ."""
+    result = {
+        "current": active_engine,
+        "gemini": {
+            "available": gemini_model is not None,
+            "model": gemini_model_name if gemini_model else None,
+        },
+        "searxng": {
+            "available": searxng_cfg is not None,
+        }
+    }
+    if searxng_cfg:
+        svc = searxng_enricher.check_services(searxng_cfg)
+        result["searxng"].update({
+            "searxng_ok":  svc["searxng"],
+            "ollama_ok":   svc["ollama"],
+            "ollama_model": searxng_cfg.get("ollama_model"),
+            "ollama_models": svc.get("ollama_models", []),
+            "errors": svc.get("errors", []),
+        })
+    return result
+
+
 @app.get("/api/health")
 async def health():
     mode = "multi-key" if isinstance(gemini_model, dict) else "single-key"
-    key_count = len(gemini_model["keys"]) if isinstance(gemini_model, dict) else 1
-    return {"status": "ok", "model": gemini_model_name,
-            "mode": mode, "keys": key_count, "version": "2.1.0"}
+    key_count = len(gemini_model["keys"]) if isinstance(gemini_model, dict) else (1 if gemini_model else 0)
+    return {"status": "ok", "engine": active_engine, "model": gemini_model_name,
+            "mode": mode, "keys": key_count, "version": "3.0.0"}
 
 
 if __name__ == "__main__":

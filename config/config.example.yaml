@@ -2,6 +2,12 @@
 # Copy file này thành config.yaml và điền thông tin thực tế
 # KHÔNG commit config.yaml lên git (đã có trong .gitignore)
 
+# ─── BRAIN ENGINE ──────────────────────────────────────────────────────────
+# Chọn AI engine để phân tích dữ liệu POI:
+#   "gemini"  → Google Gemini API (nhanh, cần API key, giới hạn 1,500 req/ngày/key)
+#   "searxng" → SearXNG + Playwright + Ollama (self-hosted, FREE, không giới hạn)
+engine: "gemini"
+
 google:
   places_api_key: "YOUR_GOOGLE_PLACES_API_KEY"
   # Đăng ký tại: https://console.cloud.google.com
@@ -13,11 +19,11 @@ gemini:
 
   # Hoặc thêm nhiều key (mỗi step dùng 1 key khác → tải đều ra 3 account free):
   api_keys:
-    - "AIzaSyDWDtivp6jXuGkVBGUVgaQ38XSOwIPJrYA"   # Step 1: Hours + Status + Category
+    - "AIzaSyA_iSVWCQ8nzs1E2X4rjnAQZH9rkhY-FIo"   # Step 1: Hours + Status + Category
     - "AIzaSyA6wvW2TdPTqLpORG0lDTeZ7kbgGVVbvB4"   # Step 2: Opening Date
     - "AIzaSyBs4OWTgU5dn4nyMVrhu1OKTeqvoXohMDQ"   # Step 3: Shopping Center
 
-  model: "gemini-2.5-flash"
+  model: "gemini-2.5-flash-lite"
   # Đăng ký tại: https://aistudio.google.com
   # Free tier mỗi key: 1,500 requests/day, 1M tokens/min
   # 3 keys = 4,500 requests/day ~ 1,500 POI/ngày
@@ -54,6 +60,23 @@ pipeline:
   delay_between_jobs: 5.0    # Giây delay giữa các job
   max_retries: 3
   retry_delay: 30            # Giây chờ trước khi retry
+
+# ─── SEARXNG + OLLAMA (Self-hosted Engine) ────────────────────────────────
+# Chỉ cần điền khi engine: "searxng"
+# Hướng dẫn cài SearXNG: docker run -d -p 8888:8080 searxng/searxng
+# Hướng dẫn cài Ollama:  https://ollama.com  →  ollama pull llama3.1:8b
+searxng:
+  url: "http://localhost:8888"  # URL SearXNG self-hosted (hoặc IP VPS)
+  max_results: 5                # Số URL tối đa mỗi lần tìm kiếm
+
+ollama:
+  url: "http://localhost:11434"  # URL Ollama local (hoặc IP VPS)
+  # Models khuyến nghị với RTX 5060Ti 16GB:
+  #   llama3.1:8b   → 6GB VRAM, nhanh, tốt tiếng Anh (khuyến nghị)
+  #   mistral:7b    → 5GB VRAM, nhanh hơn một chút
+  #   llama3.1:70b  → cần 40GB VRAM, quá sức với 16GB
+  model: "llama3.1:8b"
+  timeout: 120  # Giây chờ Ollama trả kết quả
 
 osm:
   overpass_url: "https://overpass-api.de/api/interpreter"  # Free
