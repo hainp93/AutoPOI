@@ -11,8 +11,8 @@ import json
 import logging
 import re
 import time
-import urllib.request
 from typing import Iterator
+from urllib.parse import urlparse
 from google import genai
 from google.genai import types
 
@@ -303,16 +303,10 @@ Return ONLY JSON, no markdown.
 
 def _filter_readable_urls(urls: list) -> list:
     """
-    Lọc ra URLs có thể đọc được (Yelp, news, Facebook, v.v.)
-    Loại bỏ Google redirect/grounding proxy URLs.
+    Giữ lại tất cả grounding URLs (kể cả redirect Google) vì chúng hoạt động
+    khi Gemini đọc qua url_context tool. Loại bỏ chỉ các CDN/font vô nghĩa.
     """
-    skip = ("vertexaisearch.cloud.google", "googleapis.com", "google.com/search",
-            "gstatic.com", "googletagmanager")
-    result = []
-    for u in urls:
-        if not any(s in u for s in skip) and _is_valid_source_url(u):
-            result.append(u)
-    return result[:6]   # tối đa 6 URLs để tránh quá tải
+    return [u for u in urls if _is_valid_source_url(u)][:6]
 
 
 def _step2b_read_urls(client, model_name: str, name: str, address: str,
@@ -548,11 +542,11 @@ def _extract_grounding_urls(response) -> list:
 
 def _extract_grounding_sources(response) -> list:
     """
-    Trích xuất toàn bộ thông tin nguồn từ grounding metadata:
-    - title: tên trang web (từ metadata)
-    - url: redirect URL (từ Google grounding)
-    - display_url: URL thực sau khi resolve redirect
-    - favicon: URL của favicon (dựa trên domain)
+    Trích xuất thông tin nguồn từ grounding metadata:
+    - title: tên trang thực (từ Gemini metadata)
+    - url: redirect URL (vertexaisearch...) — hoạt động khi click trên trình duyệt
+    - display_url: giống url (không resolve server-side, trình duyệt sẽ follow redirect)
+    - favicon: infer từ title hoặc URI
     """
     seen_urls = set()
     sources = []
@@ -561,80 +555,106 @@ def _extract_grounding_sources(response) -> list:
             meta = getattr(candidate, "grounding_metadata", None)
             if not meta:
                 continue
-            # Path 1: grounding_chunks[].web — có title
+            # Path 1: grounding_chunks[].web — có title thực của trang web
             for chunk in (getattr(meta, "grounding_chunks", None) or []):
                 web = getattr(chunk, "web", None)
                 if not web:
                     continue
-                uri   = getattr(web, "uri", None)   or ""
+                uri   = getattr(web, "uri",   None) or ""
                 title = getattr(web, "title", None) or ""
                 if uri and uri not in seen_urls and _is_valid_source_url(uri):
                     seen_urls.add(uri)
-                    sources.append({"url": uri, "title": title, "display_url": "", "favicon": ""})
-            # Path 2: search_entry_point rendered_content (fallback, no title)
+                    domain  = _infer_domain_from_title(title) or _domain_from_uri(uri)
+                    favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16" if domain else ""
+                    sources.append({
+                        "url":         uri,     # redirect URL (hoạt động khi user click trên browser)
+                        "title":       title,   # tên trang thực (Yelp, Facebook, news...)
+                        "display_url": uri,     # hiển thị luôn URI nhưng dùng title làm label
+                        "favicon":     favicon,
+                        "domain":      domain,
+                    })
+            # Path 2: search_entry_point rendered_content (fallback, không có title)
             sep = getattr(meta, "search_entry_point", None)
             if sep:
                 content = getattr(sep, "rendered_content", "") or ""
                 for u in re.findall(r'https?://[^\s"<>]+', content):
                     if u not in seen_urls and _is_valid_source_url(u):
                         seen_urls.add(u)
-                        sources.append({"url": u, "title": "", "display_url": "", "favicon": ""})
-            # Log queries for debug
+                        domain  = _domain_from_uri(u)
+                        favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16" if domain else ""
+                        sources.append({
+                            "url": u, "title": domain or u,
+                            "display_url": u, "favicon": favicon, "domain": domain,
+                        })
             queries = getattr(meta, "web_search_queries", []) or []
             if queries:
                 logger.debug(f"Search queries: {queries}")
     except Exception as e:
         logger.warning(f"Grounding extraction error: {e}")
-
-    # Resolve redirect URLs song song
-    _resolve_sources_parallel(sources)
     return sources
 
 
-def _resolve_redirect_url(url: str, timeout: int = 5) -> str:
+# Map keyword trong title → domain thực của nguồn
+_TITLE_DOMAIN_MAP = [
+    ("yelp",              "yelp.com"),
+    ("facebook",          "facebook.com"),
+    ("tripadvisor",       "tripadvisor.com"),
+    ("yellow pages",      "yellowpages.com"),
+    ("yp.com",            "yp.com"),
+    ("foursquare",        "foursquare.com"),
+    ("google maps",       "maps.google.com"),
+    ("google business",   "business.google.com"),
+    ("bbb",               "bbb.org"),
+    ("better business",   "bbb.org"),
+    ("mapquest",          "mapquest.com"),
+    ("indeed",            "indeed.com"),
+    ("linkedin",          "linkedin.com"),
+    ("instagram",         "instagram.com"),
+    ("twitter",           "twitter.com"),
+    ("yelp",              "yelp.com"),
+    ("angi",              "angi.com"),
+    ("homeadvisor",       "homeadvisor.com"),
+    ("nextdoor",          "nextdoor.com"),
+    ("citysearch",        "citysearch.com"),
+    ("superpages",        "superpages.com"),
+    ("manta",             "manta.com"),
+    ("chamberofcommerce", "chamberofcommerce.com"),
+]
+
+
+def _infer_domain_from_title(title: str) -> str:
     """
-    Follow redirect của Google grounding proxy URL → trả về URL thực.
-    Ví dụ: vertexaisearch.cloud.google.com/grounding-api-redirect/... → yelp.com/biz/...
+    Infer domain thực từ title của trang (ví dụ: 'Valvoline - Yelp' → 'yelp.com').
+    Nhờ Gemini metadata thường chứa tên trang ở cuối title sau dấu ' - ' hoặc ' | '.
     """
+    if not title:
+        return ""
+    tl = title.lower()
+    # Thử map trực tiếp
+    for keyword, domain in _TITLE_DOMAIN_MAP:
+        if keyword in tl:
+            return domain
+    # Thử lấy phần sau ' - ' hoặc ' | ' cười title như domain hint
+    for sep in (" - ", " | ", " – "):
+        if sep in title:
+            suffix = title.split(sep)[-1].strip().lower()
+            # Nếu suffix trông giống domain (có dấu chấm), trả luôn
+            if "." in suffix and " " not in suffix and len(suffix) < 30:
+                return suffix
+    return ""
+
+
+def _domain_from_uri(uri: str) -> str:
+    """Lấy domain từ URI (không phải Google redirect)."""
+    skip = ("vertexaisearch", "googleapis", "google.com")
     try:
-        req = urllib.request.Request(
-            url, method="HEAD",
-            headers={"User-Agent": "Mozilla/5.0 (compatible; AutoPOI/1.0)"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.url   # URL thực sau khi follow redirect
+        parsed = urlparse(uri)
+        host = parsed.netloc.lower()
+        if not any(s in host for s in skip):
+            return host.replace("www.", "")
     except Exception:
-        return url   # fallback: giữ nguyên redirect URL
-
-
-def _resolve_sources_parallel(sources: list):
-    """Resolve tất cả redirect URLs song song dùng threading. Sửa in-place."""
-    import threading as _t
-
-    def _resolve_one(s: dict):
-        resolved = _resolve_redirect_url(s["url"])
-        s["display_url"] = resolved
-        # Lấy favicon từ domain của URL đã resolve
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(resolved)
-            domain = f"{parsed.scheme}://{parsed.netloc}"
-            s["favicon"] = f"https://www.google.com/s2/favicons?domain={parsed.netloc}&sz=16"
-            # Nếu chưa có title, dùng domain làm title
-            if not s["title"]:
-                s["title"] = parsed.netloc.replace("www.", "")
-        except Exception:
-            pass
-
-    threads = [_t.Thread(target=_resolve_one, args=(s,), daemon=True) for s in sources]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join(timeout=6)   # chờ tối đa 6s mỗi thread
-    # Với những URL chưa resolve xong, dùng original URL
-    for s in sources:
-        if not s["display_url"]:
-            s["display_url"] = s["url"]
+        pass
+    return ""
 
 
 def _extract_urls_from_text(text: str) -> list:
