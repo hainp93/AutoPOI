@@ -57,6 +57,12 @@ def main():
         print("[ERROR] Server khong khoi dong duoc!")
         sys.exit(1)
 
+    print(f"[AutoPOI] ========================================")
+    print(f"[AutoPOI] Server: http://127.0.0.1:{port}")
+    print(f"[AutoPOI] Chrome check: http://127.0.0.1:{port}/debug/chrome-status")
+    print(f"[AutoPOI] Chrome test:  http://127.0.0.1:{port}/debug/test-chrome")
+    print(f"[AutoPOI] ========================================")
+
     # Mở cửa sổ desktop native
     webview.create_window(
         title="AutoPOI — Venue Data Assistant",

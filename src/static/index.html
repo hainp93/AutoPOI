@@ -441,7 +441,15 @@
           <span id="btn-icon">🔍</span>
           <span id="btn-text">Tra cứu thông tin</span>
         </button>
+        <button class="btn btn-link" id="chrome-test-btn" onclick="testChrome(this)"
+          style="font-size:12px;height:38px;padding:0 12px;border:1px solid var(--border);
+                 color:var(--muted);border-radius:8px;cursor:pointer;white-space:nowrap;"
+          title="Kiểm tra Chrome browser có hoạt động không">
+          🌐 Test Chrome
+        </button>
       </div>
+      <div id="chrome-test-result" style="display:none;margin-top:8px;font-size:12px;
+           padding:8px 12px;border-radius:8px;border:1px solid var(--border);"></div>
     </div>
   </div>
 
@@ -691,6 +699,40 @@
       if (e.key === 'Enter') lookupPOI();
     });
   });
+
+  // ── Test Chrome browser ────────────────────────────────────────────────────
+  async function testChrome(btn) {
+    const resultEl = document.getElementById('chrome-test-result');
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang mở Chrome...';
+    resultEl.style.display = 'block';
+    resultEl.style.background = 'rgba(79,140,255,0.08)';
+    resultEl.style.color = 'var(--muted)';
+    resultEl.style.borderColor = 'var(--accent)';
+    resultEl.textContent = '🌐 Đang mở Chrome (nhìn vào góc trên trái màn hình)... chờ 10-15s';
+    try {
+      const resp = await fetch('/debug/test-chrome');
+      const data = await resp.json();
+      if (data.status === 'success') {
+        resultEl.style.background = 'rgba(34,197,94,0.1)';
+        resultEl.style.color = 'var(--green)';
+        resultEl.style.borderColor = 'var(--green)';
+        resultEl.textContent = '✓ ' + (data.message || 'Chrome hoạt động!');
+      } else {
+        resultEl.style.background = 'rgba(239,68,68,0.1)';
+        resultEl.style.color = 'var(--red)';
+        resultEl.style.borderColor = 'var(--red)';
+        resultEl.textContent = '✗ ' + (data.message || 'Lỗi không xác định');
+      }
+    } catch (e) {
+      resultEl.style.background = 'rgba(239,68,68,0.1)';
+      resultEl.style.color = 'var(--red)';
+      resultEl.textContent = '✗ Không kết nối được server: ' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '🌐 Test Chrome';
+    }
+  }
 
   // ── Main lookup via SSE ────────────────────────────────────────────────────
   let activeSource = null;
