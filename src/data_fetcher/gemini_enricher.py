@@ -10,6 +10,7 @@ Thay vì 1 prompt lớn, dùng 3 bước tìm kiếm riêng biệt:
 import json
 import logging
 import re
+import time
 from typing import Iterator
 from google import genai
 from google.genai import types
@@ -93,6 +94,7 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         yield {"step": 1, "status": "error", "label": f"Step 1 lỗi: {e}"}
 
     # ── Step 2: Opening Date / Closing Date (dùng key #2) ────────────────────
+    time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 1 → 2
     yield {"step": 2, "status": "running",
            "label": "Tìm ngày khai trương và ngày đóng cửa..."}
     try:
@@ -115,6 +117,7 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
 
     # ── Step 3: Shopping Center + Site Plan (dùng key #3) ────────────────────
+    time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 2 → 3
     yield {"step": 3, "status": "running",
            "label": "Kiểm tra Shopping Center và Site Plan..."}
     try:
@@ -308,15 +311,68 @@ Rules:
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Model chính và model fallback khi gặp 429
+_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+# Delay retry (giây) nếu cả fallback cũng bị 429: lần 1, lần 2
+_RETRY_DELAYS = [20, 60]
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    s = str(e).lower()
+    return "429" in s or "resource_exhausted" in s or "rate" in s
+
+
 def _call_gemini(client, model_name: str, prompt: str):
-    """Gọi Gemini với Google Search grounding."""
-    return client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
-    )
+    """
+    Gọi Gemini với Google Search grounding.
+    Khi gặp 429:
+      1. Lập tức thử lại bằng gemini-2.5-flash-lite (không chờ)
+      2. Nếu lite cũng 429 → chờ 20s rồi thử lại model gốc
+      3. Nếu vẫn 429 → chờ 60s rồi thử lần cuối
+    """
+    def _do_call(model: str):
+        return client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
+
+    # Attempt 0: model chính
+    try:
+        return _do_call(model_name)
+    except Exception as e:
+        if not _is_rate_limit(e):
+            raise
+        logger.warning(f"429 trên {model_name} — thử fallback {_FALLBACK_MODEL}...")
+
+    # Attempt 1: fallback ngay (không chờ)
+    try:
+        resp = _do_call(_FALLBACK_MODEL)
+        logger.info(f"Fallback thành công với {_FALLBACK_MODEL}")
+        return resp
+    except Exception as e:
+        if not _is_rate_limit(e):
+            raise
+        logger.warning(f"429 trên {_FALLBACK_MODEL} — bắt đầu retry với backoff...")
+
+    # Attempt 2+: retry với backoff, luân phiên model chính và lite
+    last_exc = None
+    for i, wait in enumerate(_RETRY_DELAYS):
+        logger.warning(f"Chờ {wait}s rồi thử lại (lần {i + 1}/{len(_RETRY_DELAYS)})...")
+        time.sleep(wait)
+        # Luân phiên: lần lẻ dùng model gốc, lần chẵn dùng lite
+        retry_model = model_name if i % 2 == 0 else _FALLBACK_MODEL
+        try:
+            return _do_call(retry_model)
+        except Exception as e:
+            if not _is_rate_limit(e):
+                raise
+            last_exc = e
+            logger.warning(f"429 lại trên {retry_model} (lần {i + 1}): {e}")
+
+    raise last_exc
 
 
 def _parse_json(text: str) -> dict:
