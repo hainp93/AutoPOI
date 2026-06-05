@@ -8,6 +8,8 @@ import sys
 import json
 import logging
 import asyncio
+import queue
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -125,20 +127,28 @@ async def lookup_stream(name: str, address: str):
                     "label": "Geocoding xong",
                     "partial": geo_info})
 
-        # ── Steps 1-3: Gemini enrichment (blocking, run in executor) ──────────
+        # ── Steps 1-3: Gemini enrichment — stream real-time qua queue ─────────
         full_result = {"name": name, "address": address, **geo_info}
+        _SENTINEL = object()
+        q: queue.Queue = queue.Queue()
 
-        def run_enrichment():
-            events = []
-            for event in enrich_poi_stream(gemini_model, name, address):
-                events.append(event)
-            return events
+        def _producer():
+            """Chạy trong thread riêng, đẩy từng event vào queue ngay khi có."""
+            try:
+                for event in enrich_poi_stream(gemini_model, name, address):
+                    q.put(event)
+            finally:
+                q.put(_SENTINEL)  # báo hiệu kết thúc
 
-        enrichment_events = await asyncio.get_event_loop().run_in_executor(
-            None, run_enrichment
-        )
+        threading.Thread(target=_producer, daemon=True).start()
 
-        for event in enrichment_events:
+        # Đọc từ queue và yield ra SSE ngay lập tức
+        loop = asyncio.get_event_loop()
+        while True:
+            # Chờ event tiếp theo mà không block event loop
+            event = await loop.run_in_executor(None, q.get)
+            if event is _SENTINEL:
+                break
             if event.get("step") == "final":
                 full_result.update(event["data"])
             else:
