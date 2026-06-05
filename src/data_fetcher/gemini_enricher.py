@@ -624,6 +624,16 @@ def _extract_grounding_sources(response) -> list:
     seen_urls = set()
     sources = []
     try:
+        # 1. Trích xuất tất cả URL thực từ rendered_content (tránh link redirect bị 403)
+        real_urls = []
+        for candidate in response.candidates:
+            meta = getattr(candidate, "grounding_metadata", None)
+            if meta and getattr(meta, "search_entry_point", None):
+                html = getattr(meta.search_entry_point, "rendered_content", "")
+                if html:
+                    real_urls.extend(re.findall(r'href="(https?://[^"]+)"', html))
+
+        # 2. Xử lý từng chunk
         for candidate in response.candidates:
             meta = getattr(candidate, "grounding_metadata", None)
             if not meta:
@@ -637,11 +647,20 @@ def _extract_grounding_sources(response) -> list:
                 if uri and uri not in seen_urls and _is_valid_source_url(uri):
                     seen_urls.add(uri)
                     domain  = _infer_domain_from_title(title) or _domain_from_uri(uri)
+                    
+                    # Cố gắng tìm URL thực tương ứng với domain này để thay thế link redirect
+                    display_url = uri
+                    if domain and "vertexaisearch" in uri:
+                        for ru in real_urls:
+                            if domain in ru:
+                                display_url = ru
+                                break
+
                     favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16" if domain else ""
                     sources.append({
-                        "url":         uri,
+                        "url":         display_url,
                         "title":       title,
-                        "display_url": uri,
+                        "display_url": display_url,
                         "favicon":     favicon,
                         "domain":      domain,
                     })

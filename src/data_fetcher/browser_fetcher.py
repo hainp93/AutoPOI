@@ -485,15 +485,21 @@ def _parse_yelp_oldest_review(driver, current_url: str) -> dict:
     final_url   = driver.current_url
 
     # ── Pattern 1: <time datetime="YYYY-MM-DD"> ──
+    import datetime
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    
     dates_iso = re.findall(r'datetime=["\'](\d{4}-\d{2}-\d{2})["\']', page_source)
     if dates_iso:
-        earliest = min(dates_iso)
-        return {
-            "opening_date":            earliest,
-            "opening_date_source":     final_url,
-            "opening_date_confidence": "medium",
-            "opening_date_evidence":   f"Yelp oldest review: {earliest} (sorted by date_asc)",
-        }
+        # Lọc bỏ các ngày trong tương lai (rác do CAPTCHA/bảo mật, vd: 2026-07-04)
+        valid_dates = [d for d in dates_iso if d <= today_str]
+        if valid_dates:
+            earliest = min(valid_dates)
+            return {
+                "opening_date":            earliest,
+                "opening_date_source":     final_url,
+                "opening_date_confidence": "medium",
+                "opening_date_evidence":   f"Yelp oldest review: {earliest} (sorted by date_asc)",
+            }
 
     # ── Pattern 2: text "Month DD, YYYY" trong review section ──
     body_text  = _get_body_text(driver)
