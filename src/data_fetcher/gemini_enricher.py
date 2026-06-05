@@ -123,6 +123,45 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         logger.error(f"Step 2 error: {e}")
         yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
 
+    # ── Step 2c: Chrome browser — tự tìm kiếm nếu OD vẫn chưa có ────────────
+    _od_missing = (not result.get("opening_date") or
+                   result.get("opening_date_confidence") in ("none", "low"))
+    if _od_missing and browser_fetcher.is_configured():
+        yield {"step": 2, "status": "running",
+               "label": "🌐 Chrome browser đang tìm kiếm ngày khai trương..."}
+        try:
+            r2c = browser_fetcher.browser_find_opening_date(
+                name, address, result["grounding_sources"]
+            )
+            if r2c.get("opening_date"):
+                logger.info(f"Step 2c tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
+                real_url = r2c.get("opening_date_source", "")
+                if real_url:
+                    _up = urlparse(real_url)
+                    _dom = _up.netloc.replace("www.", "")
+                    _src = {
+                        "url":         real_url,
+                        "title":       r2c.get("opening_date_evidence", _dom),
+                        "display_url": real_url,
+                        "favicon":     f"https://www.google.com/s2/favicons?domain={_dom}&sz=16",
+                        "domain":      _dom,
+                        "step":        2,
+                    }
+                    if not _source_domain_exists(result["grounding_sources"], _src):
+                        result["grounding_sources"].append(_src)
+                        result["grounding_urls"].append(real_url)
+                result.update({k: v for k, v in r2c.items()
+                               if k not in ("grounding_urls", "grounding_sources")})
+            yield {"step": 2, "status": "done",
+                   "label": "🌐 Chrome browser hoàn tất" if r2c.get("opening_date") else "🌐 Chrome: không tìm được ngày",
+                   "partial": {k: result[k] for k in
+                               ["opening_date", "opening_date_source",
+                                "opening_date_confidence", "opening_date_evidence",
+                                "grounding_sources", "grounding_urls"]}}
+        except Exception as e:
+            logger.warning(f"Step 2c lỗi: {e}")
+            yield {"step": 2, "status": "error", "label": f"🌐 Chrome lỗi: {e}"}
+
     # ── Step 3: Shopping Center + Site Plan (dùng key #3) ────────────────────
     time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 2 → 3
     yield {"step": 3, "status": "running",
@@ -302,37 +341,6 @@ Return ONLY JSON, no markdown.
                                    if k not in ("grounding_urls", "grounding_sources")})
             except Exception as e:
                 logger.warning(f"Phase 2b lỗi: {e}")
-
-    # ── Phase 2c: Real Chrome browser — dùng profile thật ─────────────────────
-    if (not result["opening_date"] or result["opening_date_confidence"] == "none") \
-            and browser_fetcher.is_configured():
-        logger.info("Phase 2b không đủ — chuyển sang Phase 2c (real Chrome browser)...")
-        try:
-            r2c = browser_fetcher.browser_find_opening_date(
-                name, address, result["grounding_sources"]
-            )
-            if r2c.get("opening_date"):
-                logger.info(f"Phase 2c tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
-                # Thêm source mới vào grounding_sources để hiển thị URL thực
-                real_url = r2c.get("opening_date_source", "")
-                if real_url and not any(x["url"] == real_url
-                                        for x in result["grounding_sources"]):
-                    from urllib.parse import urlparse as _up
-                    parsed  = _up(real_url)
-                    domain  = parsed.netloc.replace("www.", "")
-                    favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16"
-                    result["grounding_sources"].append({
-                        "url":         real_url,
-                        "title":       r2c.get("opening_date_evidence", domain),
-                        "display_url": real_url,
-                        "favicon":     favicon,
-                        "domain":      domain,
-                    })
-                    result["grounding_urls"].append(real_url)
-                result.update({k: v for k, v in r2c.items()
-                               if k not in ("grounding_urls", "grounding_sources")})
-        except Exception as e:
-            logger.warning(f"Phase 2c lỗi: {e}")
 
     return result
 

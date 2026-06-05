@@ -2,21 +2,26 @@
 Browser-based fetcher — Step 2c fallback.
 
 Dùng Chrome thật với profile người dùng (cookies, session, login Google/Yelp/Facebook...)
-để đọc nội dung trang web thực sự. Window được đẩy ra ngoài màn hình (x=-3000)
-để chạy âm thầm không ảnh hưởng đến công việc của người dùng.
+để tự TÌM KIẾM và ĐỌC nội dung trang web thực sự.
 
-Ưu điểm so với Gemini url_context:
-  - Profile thật → bypass 403, bot detection
-  - Có cookie/session → đọc được nội dung gated
-  - Lấy được URL thực sau redirect (yelp.com/biz/...) để hiển thị đúng nguồn
+Không phụ thuộc vào URLs từ Gemini — tự search Google, Yelp, Facebook.
+Window đẩy ra ngoài màn hình (x=-3000) để chạy âm thầm.
+
+Chiến lược tìm kiếm:
+  1. Yelp search trực tiếp → sort by oldest review → lấy date đầu tiên
+  2. Google search "{name} {city} grand opening" → đọc snippets + click results
+  3. Yelp redirect URL từ Gemini grounding (nếu có)
+  4. News/Facebook URLs từ Gemini grounding
 """
 
 import re
+import sys
 import time
 import logging
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote_plus, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +30,12 @@ _cfg = {
     "profile_path": "",
     "profile_dir":  "Default",
     "offscreen_x":  -3000,
-    "page_wait":    3,        # giây chờ trang load
+    "page_wait":    4,        # giây chờ trang load (tăng lên 4 để chính xác hơn)
 }
 
 
 def setup_browser(profile_path: str, profile_dir: str = "Default",
-                  offscreen_x: int = -3000, page_wait: int = 3):
+                  offscreen_x: int = -3000, page_wait: int = 4):
     """
     Cấu hình browser fetcher từ config.yaml.
     profile_path có thể là:
@@ -47,6 +52,7 @@ def setup_browser(profile_path: str, profile_dir: str = "Default",
     })
     if resolved:
         logger.info(f"BrowserFetcher: profile='{resolved}' / dir='{profile_dir}'")
+        print(f"[BrowserFetcher] Configured: {Path(resolved).name} / {profile_dir}")
     else:
         logger.info("BrowserFetcher: không có profile, Step 2c sẽ bị bỏ qua.")
 
@@ -65,7 +71,6 @@ def _resolve_profile_path(profile_path: str) -> str:
 
     # Auto-detect theo OS
     home = Path.home()
-    import sys
     if sys.platform == "win32":
         candidate = home / "AppData" / "Local" / "Google" / "Chrome" / "User Data"
     elif sys.platform == "darwin":
@@ -129,15 +134,17 @@ def _create_driver():
             driver.execute_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-            logger.info(f"Chrome started with profile '{_cfg['profile_dir']}' (off-screen)")
+            logger.info(f"Chrome started with profile '{_cfg['profile_dir']}' (off-screen x={_cfg['offscreen_x']})")
+            print(f"[BrowserFetcher] Chrome opened (profile={_cfg['profile_dir']}, off-screen)")
             return driver
         except Exception as e:
             err = str(e).lower()
             if "user data directory is already in use" in err or "already in use" in err:
                 logger.warning(
-                    f"Chrome profile đang được dùng bởi Chrome đang mở → "
-                    f"thử lại không có profile (không có cookies)."
+                    "Chrome profile đang được dùng bởi Chrome đang mở → "
+                    "thử lại không có profile (không có cookies)."
                 )
+                print("[BrowserFetcher] Profile conflict → using Chrome without profile")
             else:
                 raise  # Lỗi khác thì raise luôn
 
@@ -161,18 +168,19 @@ def _create_driver():
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def browser_find_opening_date(name: str, address: str,
-                               candidate_sources: list) -> dict:
+                               candidate_sources: list = None) -> dict:
     """
-    Dùng Chrome thật để tìm opening date từ các candidate sources.
+    Dùng Chrome thật để tìm opening date — tự search Google + Yelp.
 
-    Thứ tự ưu tiên:
-      1. Yelp  — sort by oldest review → lấy date review đầu tiên
-      2. News  — tìm publication date + grand opening keywords
-      3. Facebook — tìm grand opening event post
+    Chiến lược (theo thứ tự):
+      1. Tìm kiếm Yelp trực tiếp: yelp.com/search → mở trang → sort by oldest
+      2. Tìm kiếm Google: "{name} {city} grand opening" → đọc snippets + click
+      3. Visit Yelp redirect URLs từ Gemini sources
+      4. Visit News/Facebook redirect URLs từ Gemini sources
 
     Args:
-        name: tên POI
-        address: địa chỉ
+        name: tên POI (vd: "Valvoline Instant Oil Change")
+        address: địa chỉ (vd: "1867 College Ave, Elmira, NY 14901")
         candidate_sources: list dict {url, title, domain} từ Gemini grounding
 
     Returns:
@@ -187,56 +195,249 @@ def browser_find_opening_date(name: str, address: str,
     if not driver:
         return {}
 
+    city_state = _extract_city_state(address)
+    print(f"[BrowserFetcher] Searching for: '{name}' in '{city_state}'")
+
     try:
-        # Phân loại sources theo domain
-        yelp_srcs    = [s for s in candidate_sources if _is_domain(s, "yelp")]
-        facebook_srcs= [s for s in candidate_sources if _is_domain(s, "facebook")]
-        news_srcs    = [s for s in candidate_sources
-                        if not _is_domain(s, "yelp") and not _is_domain(s, "facebook")]
+        # ── Chiến lược 1: Tìm Yelp trực tiếp ──
+        print("[BrowserFetcher] Strategy 1: Direct Yelp search...")
+        result = _yelp_direct_search(driver, name, city_state)
+        if result and result.get("opening_date"):
+            print(f"[BrowserFetcher] ✓ Found via Yelp search: {result['opening_date']}")
+            return result
 
-        ordered = yelp_srcs + news_srcs + facebook_srcs
+        # ── Chiến lược 2: Google search "grand opening" ──
+        print("[BrowserFetcher] Strategy 2: Google 'grand opening' search...")
+        result = _google_grand_opening_search(driver, name, city_state)
+        if result and result.get("opening_date"):
+            print(f"[BrowserFetcher] ✓ Found via Google search: {result['opening_date']}")
+            return result
 
-        for src in ordered[:5]:
-            url    = src.get("url", "")
-            domain = src.get("domain", "")
+        # ── Chiến lược 3 & 4: Visit Gemini-provided sources ──
+        sources = candidate_sources or []
+        yelp_srcs = [s for s in sources if _is_domain(s, "yelp")]
+        news_srcs = [s for s in sources
+                     if not _is_domain(s, "yelp") and not _is_domain(s, "google")]
+        fb_srcs   = [s for s in sources if _is_domain(s, "facebook")]
+        other_ordered = yelp_srcs + news_srcs + fb_srcs
+
+        for src in other_ordered[:5]:
+            url = src.get("url", "")
             if not url:
                 continue
             try:
                 if _is_domain(src, "yelp"):
+                    print(f"[BrowserFetcher] Strategy 3: Yelp redirect {url[:50]}...")
                     result = _try_yelp(driver, url)
                 elif _is_domain(src, "facebook"):
+                    print(f"[BrowserFetcher] Strategy 4: Facebook {url[:50]}...")
                     result = _try_facebook(driver, url, name)
                 else:
+                    print(f"[BrowserFetcher] Strategy 4: News {url[:50]}...")
                     result = _try_news_article(driver, url, name)
 
                 if result and result.get("opening_date"):
-                    logger.info(f"Browser tìm được: {result['opening_date']} từ {domain or url}")
+                    domain = src.get("domain", "")
+                    print(f"[BrowserFetcher] ✓ Found via {domain}: {result['opening_date']}")
                     return result
-
             except Exception as e:
                 logger.warning(f"Browser lỗi trên {url[:60]}: {e}")
                 continue
 
-        logger.info("Browser: không tìm được ngày sau khi thử tất cả sources.")
+        print("[BrowserFetcher] ✗ Không tìm được ngày sau khi thử tất cả strategies.")
         return {}
 
     finally:
         try:
             driver.quit()
-            logger.info("Chrome browser closed.")
+            print("[BrowserFetcher] Chrome closed.")
         except Exception:
             pass
 
 
-# ── Yelp scraper ──────────────────────────────────────────────────────────────
+# ── Strategy 1: Yelp direct search ───────────────────────────────────────────
 
-def _try_yelp(driver, redirect_url: str) -> dict:
+def _yelp_direct_search(driver, name: str, city_state: str) -> dict:
     """
-    Mở Yelp qua redirect URL, sort reviews by oldest first,
-    lấy date của review đầu tiên → xấp xỉ ngày khai trương.
+    Tìm trên Yelp.com bằng search form → mở trang business → sort oldest reviews.
     """
-    logger.debug(f"Yelp: navigating to {redirect_url[:70]}...")
-    driver.get(redirect_url)
+    try:
+        search_url = (
+            f"https://www.yelp.com/search?"
+            f"find_desc={quote_plus(name)}&find_loc={quote_plus(city_state)}"
+        )
+        logger.debug(f"Yelp search: {search_url}")
+        driver.get(search_url)
+        time.sleep(_cfg["page_wait"])
+
+        # Tìm link đến business page đầu tiên
+        biz_url = _extract_first_yelp_biz_link(driver)
+        if not biz_url:
+            logger.debug("Yelp search: không tìm thấy business link")
+            return {}
+
+        # Sort by oldest reviews
+        biz_base = biz_url.split("?")[0]
+        oldest_url = f"{biz_base}?sort_by=date_asc"
+        driver.get(oldest_url)
+        time.sleep(_cfg["page_wait"])
+
+        return _parse_yelp_oldest_review(driver, oldest_url)
+    except Exception as e:
+        logger.warning(f"Yelp direct search lỗi: {e}")
+        return {}
+
+
+def _extract_first_yelp_biz_link(driver) -> str:
+    """Tìm link trang business Yelp đầu tiên trong kết quả search."""
+    try:
+        page_source = driver.page_source
+        # Pattern: /biz/business-name trong search results
+        matches = re.findall(r'href="(https://www\.yelp\.com/biz/[^"?]+)', page_source)
+        if matches:
+            return matches[0]
+        # Fallback: relative /biz/ links
+        matches = re.findall(r'href="(/biz/[^"?]+)"', page_source)
+        if matches:
+            return f"https://www.yelp.com{matches[0]}"
+    except Exception:
+        pass
+    return ""
+
+
+# ── Strategy 2: Google search ─────────────────────────────────────────────────
+
+def _google_grand_opening_search(driver, name: str, city_state: str) -> dict:
+    """
+    Tìm kiếm Google: "{name} {city_state} grand opening"
+    1. Đọc date từ search result snippets
+    2. Click vào kết quả Yelp nếu có → đọc trang
+    3. Click vào kết quả news nếu có → đọc trang
+    """
+    try:
+        query = f'"{name}" {city_state} grand opening opening date'
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}"
+        logger.debug(f"Google search: {search_url}")
+        driver.get(search_url)
+        time.sleep(_cfg["page_wait"])
+
+        # ── Đọc date từ search snippets (không cần click) ──
+        result = _extract_date_from_google_snippets(driver, name)
+        if result and result.get("opening_date"):
+            return result
+
+        # ── Click vào kết quả Yelp ──
+        yelp_link = _find_google_result_link(driver, "yelp.com")
+        if yelp_link:
+            logger.debug(f"Google → Yelp: {yelp_link[:70]}")
+            result = _try_yelp(driver, yelp_link)
+            if result and result.get("opening_date"):
+                return result
+
+        # ── Click vào kết quả news đầu tiên ──
+        news_link = _find_google_news_link(driver)
+        if news_link:
+            logger.debug(f"Google → News: {news_link[:70]}")
+            result = _try_news_article(driver, news_link, name)
+            if result and result.get("opening_date"):
+                return result
+
+        # ── Thử search thêm: "{name} {city} opened YYYY" ──
+        query2 = f'"{name}" {city_state} opened site:yelp.com OR site:yellowpages.com'
+        driver.get(f"https://www.google.com/search?q={quote_plus(query2)}")
+        time.sleep(_cfg["page_wait"])
+        yelp_link2 = _find_google_result_link(driver, "yelp.com")
+        if yelp_link2:
+            result = _try_yelp(driver, yelp_link2)
+            if result and result.get("opening_date"):
+                return result
+
+    except Exception as e:
+        logger.warning(f"Google search lỗi: {e}")
+
+    return {}
+
+
+def _extract_date_from_google_snippets(driver, poi_name: str) -> dict:
+    """
+    Đọc date từ các đoạn text trong Google search results (snippets).
+    Google thường hiển thị "Opened: March 2019" hay "Grand opening July 15, 2019".
+    """
+    try:
+        body_text = driver.find_element("tag name", "body").text
+        current_url = driver.current_url
+
+        # Pattern: "opened" / "grand opening" + date
+        patterns = [
+            r'(?:grand\s+opening|opened?|now\s+open|first\s+open(?:ed)?)\s*:?\s*'
+            r'((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?'
+            r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+            r'\s+\d{1,2},?\s+\d{4})',
+            r'(?:grand\s+opening|opened?)\s*:?\s*(\d{4})',
+            r'(?:opened|established|founded)\s+in\s+(\d{4})',
+        ]
+        for pat in patterns:
+            m = re.search(pat, body_text, re.IGNORECASE)
+            if m:
+                found = m.group(1).strip()
+                iso = _parse_text_date(found)
+                if iso:
+                    snippet = body_text[max(0, m.start()-50):m.end()+50].strip()
+                    return {
+                        "opening_date":            iso,
+                        "opening_date_source":     current_url,
+                        "opening_date_confidence": "medium",
+                        "opening_date_evidence":   f"Google snippet: '{snippet}'",
+                    }
+    except Exception:
+        pass
+    return {}
+
+
+def _find_google_result_link(driver, domain_keyword: str) -> str:
+    """Tìm link đến domain cụ thể trong Google results."""
+    try:
+        page_source = driver.page_source
+        # Tìm href có chứa domain trong kết quả
+        pattern = rf'href="(https?://(?:www\.)?{re.escape(domain_keyword)}[^"]*)"'
+        matches = re.findall(pattern, page_source)
+        # Lọc bỏ Google's own redirect links
+        for m in matches:
+            if "google.com" not in m:
+                return m
+    except Exception:
+        pass
+    return ""
+
+
+def _find_google_news_link(driver) -> str:
+    """Tìm link news article trong Google results (không phải Yelp, không phải Google)."""
+    _skip = ("google.com", "yelp.com", "facebook.com", "twitter.com",
+             "instagram.com", "wikipedia.org", "carfax.com")
+    try:
+        page_source = driver.page_source
+        matches = re.findall(r'href="(https?://[^"]+)"', page_source)
+        for m in matches:
+            parsed = urlparse(m)
+            domain = parsed.netloc.lower().replace("www.", "")
+            if not any(skip in domain for skip in _skip):
+                # Là news link nếu path có dạng /2019/... hay /article/...
+                if (re.search(r'/20\d{2}/', m) or
+                        re.search(r'/(article|news|story|post|press)/', m, re.I)):
+                    return m
+    except Exception:
+        pass
+    return ""
+
+
+# ── Yelp page reader ──────────────────────────────────────────────────────────
+
+def _try_yelp(driver, url: str) -> dict:
+    """
+    Mở trang Yelp (redirect URL hoặc direct URL), sort by oldest, lấy date đầu tiên.
+    """
+    logger.debug(f"Yelp: navigating to {url[:70]}...")
+    driver.get(url)
     time.sleep(_cfg["page_wait"])
 
     actual_url = driver.current_url
@@ -244,11 +445,17 @@ def _try_yelp(driver, redirect_url: str) -> dict:
         logger.debug(f"Yelp: redirect không dẫn đến yelp.com (got {actual_url[:60]})")
         return {}
 
+    return _parse_yelp_oldest_review(driver, actual_url)
+
+
+def _parse_yelp_oldest_review(driver, current_url: str) -> dict:
+    """Sort Yelp reviews by oldest, parse date của review đầu tiên."""
     # Sort by oldest (date_asc)
-    yelp_base   = actual_url.split("?")[0]
-    oldest_url  = f"{yelp_base}?sort_by=date_asc"
-    driver.get(oldest_url)
-    time.sleep(_cfg["page_wait"])
+    biz_base  = current_url.split("?")[0]
+    oldest_url = f"{biz_base}?sort_by=date_asc"
+    if driver.current_url != oldest_url:
+        driver.get(oldest_url)
+        time.sleep(_cfg["page_wait"])
 
     page_source = driver.page_source
     final_url   = driver.current_url
@@ -261,11 +468,11 @@ def _try_yelp(driver, redirect_url: str) -> dict:
             "opening_date":            earliest,
             "opening_date_source":     final_url,
             "opening_date_confidence": "medium",
-            "opening_date_evidence":   f"Yelp oldest review date: {earliest} (sorted by date ascending)",
+            "opening_date_evidence":   f"Yelp oldest review: {earliest} (sorted by date_asc)",
         }
 
-    # ── Pattern 2: text "Month DD, YYYY" trong reviews ──
-    body_text = _get_body_text(driver)
+    # ── Pattern 2: text "Month DD, YYYY" trong review section ──
+    body_text  = _get_body_text(driver)
     date_match = _extract_earliest_date_from_text(body_text)
     if date_match:
         return {
@@ -278,24 +485,20 @@ def _try_yelp(driver, redirect_url: str) -> dict:
     return {}
 
 
-# ── News article scraper ──────────────────────────────────────────────────────
+# ── News article reader ───────────────────────────────────────────────────────
 
-def _try_news_article(driver, redirect_url: str, poi_name: str) -> dict:
+def _try_news_article(driver, url: str, poi_name: str) -> dict:
     """
-    Mở news article qua redirect URL, tìm:
-    1. Publication date trong meta tags
-    2. "Grand opening" / "now open" + date trong body text
+    Mở news article, tìm publication date + grand opening keywords.
     """
-    logger.debug(f"News: navigating to {redirect_url[:70]}...")
-    driver.get(redirect_url)
+    logger.debug(f"News: navigating to {url[:70]}...")
+    driver.get(url)
     time.sleep(_cfg["page_wait"])
 
     actual_url  = driver.current_url
     page_source = driver.page_source
 
     # ── Meta tag dates ──
-    # <meta property="article:published_time" content="2019-07-25T10:00:00Z"/>
-    # <meta name="pubdate" content="2019-07-25"/>
     meta_patterns = [
         r'(?:published_time|datePublished|pubdate|article:published)["\s:=]+["\']?(\d{4}-\d{2}-\d{2})',
         r'<time[^>]+datetime=["\'](\d{4}-\d{2}-\d{2})',
@@ -303,10 +506,9 @@ def _try_news_article(driver, redirect_url: str, poi_name: str) -> dict:
     for pat in meta_patterns:
         m = re.search(pat, page_source, re.IGNORECASE)
         if m:
-            date_iso = m.group(1)
-            # Chỉ trả về nếu article có mention POI name hoặc opening keywords
+            date_iso  = m.group(1)
             body_text = _get_body_text(driver)
-            poi_words = poi_name.lower().split()[:2]
+            poi_words = [w for w in poi_name.lower().split() if len(w) > 3][:3]
             if any(w in body_text.lower() for w in poi_words):
                 return {
                     "opening_date":            date_iso,
@@ -315,7 +517,7 @@ def _try_news_article(driver, redirect_url: str, poi_name: str) -> dict:
                     "opening_date_evidence":   f"News article published: {date_iso}",
                 }
 
-    # ── "Grand opening" mention trong body ──
+    # ── Grand opening mention trong body ──
     body_text = _get_body_text(driver)
     pattern = (
         r'(?:grand\s+opening|now\s+open(?:ed)?|opened?\s+(?:its\s+doors\s+)?(?:on|in)?'
@@ -328,34 +530,30 @@ def _try_news_article(driver, redirect_url: str, poi_name: str) -> dict:
     if m:
         found_date = m.group(1).strip()
         iso = _parse_text_date(found_date)
+        snippet = body_text[max(0, m.start()-30):m.end()+50].strip()
         return {
             "opening_date":            iso or found_date,
             "opening_date_source":     actual_url,
             "opening_date_confidence": "high" if iso else "medium",
-            "opening_date_evidence":   f"News article: '{body_text[max(0,m.start()-30):m.end()+30].strip()}'",
+            "opening_date_evidence":   f"'{snippet}'",
         }
 
     return {}
 
 
-# ── Facebook scraper ──────────────────────────────────────────────────────────
+# ── Facebook reader ───────────────────────────────────────────────────────────
 
-def _try_facebook(driver, redirect_url: str, poi_name: str) -> dict:
-    """
-    Mở Facebook page qua redirect URL, tìm grand opening post.
-    (Yêu cầu user đã login Facebook trong Chrome profile)
-    """
-    logger.debug(f"Facebook: navigating to {redirect_url[:70]}...")
-    driver.get(redirect_url)
-    time.sleep(_cfg["page_wait"] + 1)  # FB cần thêm thời gian load
+def _try_facebook(driver, url: str, poi_name: str) -> dict:
+    """Mở Facebook page, tìm grand opening post."""
+    logger.debug(f"Facebook: navigating to {url[:70]}...")
+    driver.get(url)
+    time.sleep(_cfg["page_wait"] + 2)  # FB cần thêm thời gian
 
     actual_url = driver.current_url
     if "facebook.com" not in actual_url:
         return {}
 
     body_text = _get_body_text(driver)
-
-    # Tìm grand opening post
     pattern = (
         r'(?:grand\s+opening|now\s+open|we\s+are\s+open|doors\s+open)'
         r'.*?'
@@ -373,16 +571,32 @@ def _try_facebook(driver, redirect_url: str, poi_name: str) -> dict:
             "opening_date_confidence": "high" if iso else "medium",
             "opening_date_evidence":   f"Facebook grand opening post: '{found_date}'",
         }
-
     return {}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _extract_city_state(address: str) -> str:
+    """Trích xuất 'City, STATE' từ địa chỉ US đầy đủ."""
+    # "1867 College Ave, Elmira, NY 14901" → "Elmira, NY"
+    parts = [p.strip() for p in address.split(",")]
+    if len(parts) >= 3:
+        city = parts[-3] if len(parts) > 3 else parts[-2]
+        # State là parts[-2] (có thể kèm zip)
+        state_zip = parts[-2].strip() if len(parts) >= 2 else ""
+        state = re.match(r'([A-Z]{2})', state_zip)
+        state = state.group(1) if state else state_zip
+        return f"{city}, {state}"
+    elif len(parts) == 2:
+        return address.split(",", 1)[1].strip()
+    return address
+
+
 def _is_domain(source: dict, keyword: str) -> bool:
     domain = (source.get("domain") or "").lower()
     title  = (source.get("title")  or "").lower()
-    return keyword in domain or keyword in title
+    url    = (source.get("url")    or "").lower()
+    return keyword in domain or keyword in title or keyword in url
 
 
 def _get_body_text(driver) -> str:
@@ -402,11 +616,9 @@ _MONTH_MAP = {
 def _parse_text_date(text: str) -> Optional[str]:
     """Chuyển 'July 25, 2019' → '2019-07-25'. Trả None nếu không parse được."""
     text = text.strip()
-    # YYYY-MM-DD
     m = re.match(r'(\d{4})-(\d{2})-(\d{2})', text)
     if m:
         return text[:10]
-    # Month DD, YYYY hoặc Month YYYY
     m = re.match(
         r'(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?'
         r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
@@ -417,7 +629,6 @@ def _parse_text_date(text: str) -> Optional[str]:
         day = m.group(2).zfill(2)
         yr  = m.group(3)
         return f"{yr}-{mon}-{day}"
-    # Month YYYY only
     m = re.match(
         r'(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?'
         r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
@@ -426,7 +637,6 @@ def _parse_text_date(text: str) -> Optional[str]:
     if m:
         mon = _MONTH_MAP.get(m.group(1)[:3].lower(), "01")
         return f"{m.group(2)}-{mon}"
-    # Just year
     m = re.match(r'(\d{4})$', text)
     if m:
         return m.group(1)
@@ -434,10 +644,7 @@ def _parse_text_date(text: str) -> Optional[str]:
 
 
 def _extract_earliest_date_from_text(text: str) -> Optional[dict]:
-    """
-    Tìm date sớm nhất trong text theo dạng 'Month DD, YYYY'.
-    Trả {iso, text} hoặc None.
-    """
+    """Tìm date sớm nhất trong text theo dạng 'Month DD, YYYY'."""
     pattern = (
         r'(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?'
         r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
@@ -449,8 +656,6 @@ def _extract_earliest_date_from_text(text: str) -> Optional[dict]:
         iso = _parse_text_date(full_text)
         if iso:
             found.append({"iso": iso, "text": full_text})
-
     if not found:
         return None
-    # Trả về date sớm nhất
     return min(found, key=lambda x: x["iso"])
