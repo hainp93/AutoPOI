@@ -130,11 +130,6 @@ def _create_driver(visible: bool = True):
             opts.add_argument("--disable-blink-features=AutomationControlled")
             opts.add_experimental_option("excludeSwitches", ["enable-automation"])
             opts.add_experimental_option("useAutomationExtension", False)
-            # Prefs: mark session as exited cleanly → không hỏi restore
-            opts.add_experimental_option("prefs", {
-                "profile.exit_type":       "Normal",
-                "profile.exited_cleanly":  True,
-            })
             return opts
 
         def _patch(driver):
@@ -163,7 +158,7 @@ def _create_driver(visible: bool = True):
         try:
             driver = webdriver.Chrome(options=_build_opts(with_profile=True))
             logger.info(f"Chrome started at (100,100) with profile '{_cfg['profile_dir']}'")
-            print(f"[BrowserFetcher] Chrome opened at (100,100) — profile={_cfg['profile_dir']}")
+            print(f"[BrowserFetcher] Chrome opened at (100,100) - profile={_cfg['profile_dir']}")
             return _patch(driver)
         except Exception as e:
             err = str(e).lower()
@@ -171,10 +166,11 @@ def _create_driver(visible: bool = True):
                 "user data directory is already in use" in err
                 or "already in use" in err
                 or "devtoolsactiveport" in err
+                or "chrome instance exited" in err
             )
             if is_profile_conflict:
-                logger.warning("Chrome profile bị lock bởi Chrome đang mở → thử không có profile")
-                print("[BrowserFetcher] Profile locked → trying without profile")
+                logger.warning("Chrome profile bị lock bởi Chrome đang mở -> thử không có profile")
+                print("[BrowserFetcher] Profile locked -> trying without profile")
             else:
                 logger.error(f"Chrome lỗi: {e}")
                 print(f"[BrowserFetcher] Chrome error: {e}")
@@ -183,7 +179,7 @@ def _create_driver(visible: bool = True):
         # ── Thử 2: visible + không có profile ──
         driver = webdriver.Chrome(options=_build_opts(with_profile=False))
         logger.info("Chrome started at (100,100) WITHOUT profile (no cookies)")
-        print("[BrowserFetcher] Chrome opened (no profile — Chrome was already running)")
+        print("[BrowserFetcher] Chrome opened (no profile - Chrome was already running)")
         return _patch(driver)
 
     except ImportError:
@@ -229,7 +225,7 @@ def browser_find_opening_date(name: str, address: str,
 
     try:
         # ── Chiến lược 1: Truy cập thẳng các link do Gemini cung cấp ──
-        # Gemini đã search Google API và có sẵn URL chính xác → ưu tiên cao nhất
+        # Gemini đã search Google API và có sẵn URL chính xác -> ưu tiên cao nhất
         print("[BrowserFetcher] Strategy 1: Visit Gemini provided URLs...")
         sources = candidate_sources or []
         yelp_srcs = [s for s in sources if _is_domain(s, "yelp")]
@@ -244,18 +240,18 @@ def browser_find_opening_date(name: str, address: str,
                 continue
             try:
                 if _is_domain(src, "yelp"):
-                    print(f"[BrowserFetcher]   → Yelp: {url[:60]}...")
+                    print(f"[BrowserFetcher]   -> Yelp: {url[:60]}...")
                     result = _try_yelp(driver, url)
                 elif _is_domain(src, "facebook"):
-                    print(f"[BrowserFetcher]   → Facebook: {url[:60]}...")
+                    print(f"[BrowserFetcher]   -> Facebook: {url[:60]}...")
                     result = _try_facebook(driver, url, name)
                 else:
-                    print(f"[BrowserFetcher]   → News: {url[:60]}...")
+                    print(f"[BrowserFetcher]   -> News: {url[:60]}...")
                     result = _try_news_article(driver, url, name)
 
                 if result and result.get("opening_date"):
                     domain = src.get("domain", "")
-                    print(f"[BrowserFetcher] ✓ Found via {domain}: {result['opening_date']}")
+                    print(f"[BrowserFetcher] [OK] Found via {domain}: {result['opening_date']}")
                     return result
             except Exception as e:
                 logger.warning(f"Browser lỗi trên {url[:60]}: {e}")
@@ -265,10 +261,10 @@ def browser_find_opening_date(name: str, address: str,
         print("[BrowserFetcher] Strategy 2: Google 'grand opening' search...")
         result = _google_grand_opening_search(driver, name, city_state)
         if result and result.get("opening_date"):
-            print(f"[BrowserFetcher] ✓ Found via Google search: {result['opening_date']}")
+            print(f"[BrowserFetcher] [OK] Found via Google search: {result['opening_date']}")
             return result
 
-        print("[BrowserFetcher] ✗ Không tìm được ngày sau khi thử tất cả strategies.")
+        print("[BrowserFetcher] [FAIL] Did not find opening date after trying all strategies.")
         return {}
 
     finally:
@@ -680,11 +676,14 @@ def _extract_earliest_date_from_text(text: str) -> Optional[dict]:
         r'|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
         r'\s+(\d{1,2}),?\s+(\d{4})'
     )
+    import datetime
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
     found = []
     for m in re.finditer(pattern, text, re.IGNORECASE):
         full_text = m.group(0)
         iso = _parse_text_date(full_text)
-        if iso:
+        if iso and iso <= today_str:
             found.append({"iso": iso, "text": full_text})
     if not found:
         return None
