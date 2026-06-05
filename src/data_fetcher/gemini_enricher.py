@@ -239,10 +239,12 @@ Rules:
     }
 
 
-def _is_rate_limit(e: Exception) -> bool:
-    s = str(e).lower()
-    return "429" in s or "resource_exhausted" in s or "rate" in s
+_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+_RETRY_DELAYS = [20, 60]
 
+def _is_rate_limit(e: Exception) -> bool:
+    err = str(e).lower()
+    return "429" in err or "quota" in err or "rate limit" in err
 
 def _call_gemini(client, model_name: str, prompt: str):
     """
