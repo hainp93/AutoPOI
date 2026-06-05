@@ -93,27 +93,33 @@ def is_configured() -> bool:
 
 # ── Driver factory ────────────────────────────────────────────────────────────
 
-def _create_driver():
+def _create_driver(visible: bool = False):
     """
-    Tạo Chrome WebDriver với:
-    - Profile người dùng thật (cookies, logins)
-    - Window đẩy ra ngoài màn hình (offscreen_x, -3000 mặc định)
-    - Tắt automation flags để bypass bot detection
+    Tạo Chrome WebDriver:
+    - Mặc định: --headless=new (Chrome 112+) — không hiện cửa sổ, vẫn dùng profile/cookies
+    - visible=True: hiện cửa sổ ở (100,100) — dùng cho /debug/test-chrome
 
-    Nếu Chrome đang mở cùng profile → thử lại không có profile
-    (vẫn dùng Chrome thật nhưng không có cookies, tốt hơn headless).
+    Fallback chain:
+      1. headless + profile thật (cookies đầy đủ)
+      2. headless + không có profile (nếu profile bị lock)
+      3. visible + không có profile (emergency)
     """
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
-        def _build_opts(with_profile: bool) -> Options:
+        def _build_opts(with_profile: bool, headless: bool = True) -> Options:
             opts = Options()
             if with_profile and _cfg["profile_path"]:
                 opts.add_argument(f'--user-data-dir={_cfg["profile_path"]}')
                 opts.add_argument(f'--profile-directory={_cfg["profile_dir"]}')
-            opts.add_argument(f'--window-position={_cfg["offscreen_x"]},0')
-            opts.add_argument("--window-size=1280,900")
+            if headless and not visible:
+                # --headless=new: Chrome 112+ headless, vẫn support JS/cookies
+                opts.add_argument("--headless=new")
+            else:
+                # Visible mode cho debug/test
+                opts.add_argument("--window-position=100,100")
+                opts.add_argument("--window-size=1024,768")
             opts.add_argument("--no-first-run")
             opts.add_argument("--no-default-browser-check")
             opts.add_argument("--disable-notifications")
@@ -121,41 +127,56 @@ def _create_driver():
             opts.add_argument("--disable-extensions")
             opts.add_argument("--no-sandbox")
             opts.add_argument("--disable-dev-shm-usage")
+            opts.add_argument("--disable-gpu")
+            opts.add_argument("--disable-software-rasterizer")
+            opts.add_argument("--remote-debugging-port=0")
             # Bypass bot detection
             opts.add_argument("--disable-blink-features=AutomationControlled")
             opts.add_experimental_option("excludeSwitches", ["enable-automation"])
             opts.add_experimental_option("useAutomationExtension", False)
             return opts
 
-        # Thử 1: dùng profile thật (có cookies)
-        try:
-            driver = webdriver.Chrome(options=_build_opts(with_profile=True))
+        def _patch(driver):
             driver.implicitly_wait(5)
-            driver.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
-            logger.info(f"Chrome started with profile '{_cfg['profile_dir']}' (off-screen x={_cfg['offscreen_x']})")
-            print(f"[BrowserFetcher] Chrome opened (profile={_cfg['profile_dir']}, off-screen)")
+            try:
+                driver.execute_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                )
+            except Exception:
+                pass
             return driver
+
+        # ── Thử 1: headless + profile thật ──
+        try:
+            driver = webdriver.Chrome(options=_build_opts(with_profile=True, headless=not visible))
+            logger.info(f"Chrome headless started with profile '{_cfg['profile_dir']}'")
+            print(f"[BrowserFetcher] Chrome {'visible' if visible else 'headless'} started (profile={_cfg['profile_dir']})")
+            return _patch(driver)
         except Exception as e:
             err = str(e).lower()
-            if "user data directory is already in use" in err or "already in use" in err:
-                logger.warning(
-                    "Chrome profile đang được dùng bởi Chrome đang mở → "
-                    "thử lại không có profile (không có cookies)."
-                )
-                print("[BrowserFetcher] Profile conflict → using Chrome without profile")
+            is_profile_conflict = (
+                "user data directory is already in use" in err
+                or "already in use" in err
+                or "devtoolsactiveport" in err   # profile lock thường gây lỗi này
+            )
+            if is_profile_conflict:
+                logger.warning("Chrome profile bị lock → thử không có profile")
+                print("[BrowserFetcher] Profile locked → trying without profile")
             else:
-                raise  # Lỗi khác thì raise luôn
+                logger.error(f"Chrome lỗi: {e}")
+                print(f"[BrowserFetcher] Chrome error: {e}")
+                raise
 
-        # Thử 2: không có profile (Chrome đang mở conflict)
-        driver = webdriver.Chrome(options=_build_opts(with_profile=False))
-        driver.implicitly_wait(5)
-        driver.execute_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
-        logger.info("Chrome started WITHOUT profile (fallback, no cookies)")
-        return driver
+        # ── Thử 2: headless + không có profile ──
+        try:
+            driver = webdriver.Chrome(options=_build_opts(with_profile=False, headless=True))
+            logger.info("Chrome headless started WITHOUT profile (no cookies)")
+            print("[BrowserFetcher] Chrome headless started (no profile, no cookies)")
+            return _patch(driver)
+        except Exception as e:
+            logger.error(f"Chrome headless (no profile) lỗi: {e}")
+            print(f"[BrowserFetcher] Chrome headless (no profile) error: {e}")
+            raise
 
     except ImportError:
         logger.error("selenium chưa được cài. Chạy: pip install selenium")

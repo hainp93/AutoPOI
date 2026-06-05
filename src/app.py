@@ -154,34 +154,21 @@ async def test_chrome():
     result = {}
 
     def _test():
+        import time as _t
         try:
-            from selenium import webdriver
-            from selenium.webdriver.chrome.options import Options
-            cfg = browser_fetcher._cfg
-            opts = Options()
-            if cfg["profile_path"]:
-                opts.add_argument(f'--user-data-dir={cfg["profile_path"]}')
-                opts.add_argument(f'--profile-directory={cfg["profile_dir"]}')
-            # Vị trí NHÌN THẤY — góc trên trái màn hình
-            opts.add_argument("--window-position=100,100")
-            opts.add_argument("--window-size=900,600")
-            opts.add_argument("--no-first-run")
-            opts.add_argument("--no-default-browser-check")
-            opts.add_argument("--disable-notifications")
-            opts.add_argument("--disable-blink-features=AutomationControlled")
-            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-            opts.add_experimental_option("useAutomationExtension", False)
-            driver = webdriver.Chrome(options=opts)
-            driver.execute_script(
-                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-            )
+            # visible=True → Chrome hiện ở (100,100) để user thấy
+            driver = browser_fetcher._create_driver(visible=True)
+            if not driver:
+                result["status"]  = "error"
+                result["message"] = "Không tạo được Chrome driver — xem console log"
+                return
             driver.get("https://www.yelp.com/search?find_desc=Valvoline&find_loc=New+York")
-            _time.sleep(5)
+            _t.sleep(5)
             title = driver.title
             driver.quit()
             result["status"]  = "success"
             result["title"]   = title
-            result["message"] = f"✓ Chrome hoạt động tốt! Title: '{title}'"
+            result["message"] = f"✓ Chrome hoạt động! Title: '{title}'"
         except Exception as e:
             result["status"]  = "error"
             result["message"] = str(e)
