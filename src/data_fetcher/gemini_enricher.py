@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import time
+import urllib.request
 from typing import Iterator
 from google import genai
 from google.genai import types
@@ -88,7 +89,8 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
                "partial": {k: result[k] for k in
                            ["opening_hours", "opening_hours_source",
                             "is_closed", "closing_date", "category",
-                            "official_website", "grounding_urls"]}}
+                            "official_website", "grounding_urls",
+                            "grounding_sources"]}}
     except Exception as e:
         logger.error(f"Step 1 error: {e}")
         yield {"step": 1, "status": "error", "label": f"Step 1 lỗi: {e}"}
@@ -101,10 +103,13 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         s2 = _step2_dates(client2, model_name, name, address,
                           official_website=result.get("official_website", ""))
         result.update(s2)
-        # Merge grounding URLs
+        # Merge grounding URLs + sources
         for u in s2.get("grounding_urls", []):
             if u not in result["grounding_urls"]:
                 result["grounding_urls"].append(u)
+        for s in s2.get("grounding_sources", []):
+            if not any(x["url"] == s["url"] for x in result["grounding_sources"]):
+                result["grounding_sources"].append(s)
         yield {"step": 2, "status": "done",
                "label": "Tìm được ngày",
                "partial": {k: result[k] for k in
@@ -126,6 +131,9 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         for u in s3.get("grounding_urls", []):
             if u not in result["grounding_urls"]:
                 result["grounding_urls"].append(u)
+        for s in s3.get("grounding_sources", []):
+            if not any(x["url"] == s["url"] for x in result["grounding_sources"]):
+                result["grounding_sources"].append(s)
         yield {"step": 3, "status": "done",
                "label": "Hoàn tất",
                "partial": {k: result[k] for k in
@@ -186,7 +194,8 @@ Rules:
     response = _call_gemini(client, model_name, prompt)
     raw = response.text
     data = _parse_json(raw)
-    urls = _extract_grounding_urls(response) or _extract_urls_from_text(raw)
+    sources = _extract_grounding_sources(response)
+    urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
 
     return {
         "opening_hours":        data.get("opening_hours", "") or "",
@@ -199,6 +208,7 @@ Rules:
         "category":             data.get("category", "") or "",
         "official_website":     data.get("official_website", "") or "",
         "grounding_urls":       urls,
+        "grounding_sources":    sources,
     }
 
 
@@ -248,7 +258,8 @@ Return ONLY JSON, no markdown.
     response = _call_gemini(client, model_name, prompt)
     raw = response.text
     data = _parse_json(raw)
-    urls = _extract_grounding_urls(response) or _extract_urls_from_text(raw)
+    sources = _extract_grounding_sources(response)
+    urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
 
     result = {
         "opening_date":             data.get("opening_date", "") or "",
@@ -262,6 +273,7 @@ Return ONLY JSON, no markdown.
         "closing_date_confidence":  data.get("closing_date_confidence", "none"),
         "suggested_searches":       data.get("suggested_searches", []) or [],
         "grounding_urls":           urls,
+        "grounding_sources":        sources,
     }
 
     # ── Phase 2b: Đọc chi tiết trang nếu chưa tìm được ngày ─────────────────
@@ -278,7 +290,11 @@ Return ONLY JSON, no markdown.
                     for u in r2b.get("grounding_urls", []):
                         if u not in result["grounding_urls"]:
                             result["grounding_urls"].append(u)
-                    result.update({k: v for k, v in r2b.items() if k != "grounding_urls"})
+                    for s in r2b.get("grounding_sources", []):
+                        if not any(x["url"] == s["url"] for x in result["grounding_sources"]):
+                            result["grounding_sources"].append(s)
+                    result.update({k: v for k, v in r2b.items()
+                                   if k not in ("grounding_urls", "grounding_sources")})
             except Exception as e:
                 logger.warning(f"Phase 2b lỗi: {e}")
 
@@ -365,7 +381,8 @@ Return ONLY JSON, no markdown.
 
     raw = response.text
     data = _parse_json(raw)
-    found_urls = _extract_grounding_urls(response) or _extract_urls_from_text(raw)
+    sources = _extract_grounding_sources(response)
+    found_urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
 
     return {
         "opening_date":            data.get("opening_date", "") or "",
@@ -378,6 +395,7 @@ Return ONLY JSON, no markdown.
                                                 ["clos", "shut", "bankrupt"]),
         "closing_date_confidence": data.get("closing_date_confidence", "none"),
         "grounding_urls":          found_urls,
+        "grounding_sources":       sources,
     }
 
 
@@ -414,13 +432,15 @@ Rules:
     response = _call_gemini(client, model_name, prompt)
     raw = response.text
     data = _parse_json(raw)
-    urls = _extract_grounding_urls(response) or _extract_urls_from_text(raw)
+    sources = _extract_grounding_sources(response)
+    urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
 
     return {
         "is_in_shopping_center": bool(data.get("is_in_shopping_center", False)),
         "shopping_center_name":  data.get("shopping_center_name"),
         "site_plan_url":         data.get("site_plan_url"),
         "grounding_urls":        urls,
+        "grounding_sources":     sources,
     }
 
 
@@ -522,33 +542,99 @@ def _is_valid_source_url(url: str) -> bool:
 
 def _extract_grounding_urls(response) -> list:
     """Lấy URL thực từ Google Search grounding metadata."""
-    urls = []
+    sources = _extract_grounding_sources(response)
+    return [s["url"] for s in sources]
+
+
+def _extract_grounding_sources(response) -> list:
+    """
+    Trích xuất toàn bộ thông tin nguồn từ grounding metadata:
+    - title: tên trang web (từ metadata)
+    - url: redirect URL (từ Google grounding)
+    - display_url: URL thực sau khi resolve redirect
+    - favicon: URL của favicon (dựa trên domain)
+    """
+    seen_urls = set()
+    sources = []
     try:
         for candidate in response.candidates:
             meta = getattr(candidate, "grounding_metadata", None)
             if not meta:
                 continue
-            # Path 1: grounding_chunks[].web.uri
+            # Path 1: grounding_chunks[].web — có title
             for chunk in (getattr(meta, "grounding_chunks", None) or []):
                 web = getattr(chunk, "web", None)
-                if web:
-                    uri = getattr(web, "uri", None)
-                    if uri and uri not in urls and _is_valid_source_url(uri):
-                        urls.append(uri)
-            # Path 2: search_entry_point rendered_content
+                if not web:
+                    continue
+                uri   = getattr(web, "uri", None)   or ""
+                title = getattr(web, "title", None) or ""
+                if uri and uri not in seen_urls and _is_valid_source_url(uri):
+                    seen_urls.add(uri)
+                    sources.append({"url": uri, "title": title, "display_url": "", "favicon": ""})
+            # Path 2: search_entry_point rendered_content (fallback, no title)
             sep = getattr(meta, "search_entry_point", None)
             if sep:
                 content = getattr(sep, "rendered_content", "") or ""
                 for u in re.findall(r'https?://[^\s"<>]+', content):
-                    if u not in urls and _is_valid_source_url(u):
-                        urls.append(u)
+                    if u not in seen_urls and _is_valid_source_url(u):
+                        seen_urls.add(u)
+                        sources.append({"url": u, "title": "", "display_url": "", "favicon": ""})
             # Log queries for debug
             queries = getattr(meta, "web_search_queries", []) or []
             if queries:
                 logger.debug(f"Search queries: {queries}")
     except Exception as e:
         logger.warning(f"Grounding extraction error: {e}")
-    return urls
+
+    # Resolve redirect URLs song song
+    _resolve_sources_parallel(sources)
+    return sources
+
+
+def _resolve_redirect_url(url: str, timeout: int = 5) -> str:
+    """
+    Follow redirect của Google grounding proxy URL → trả về URL thực.
+    Ví dụ: vertexaisearch.cloud.google.com/grounding-api-redirect/... → yelp.com/biz/...
+    """
+    try:
+        req = urllib.request.Request(
+            url, method="HEAD",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AutoPOI/1.0)"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.url   # URL thực sau khi follow redirect
+    except Exception:
+        return url   # fallback: giữ nguyên redirect URL
+
+
+def _resolve_sources_parallel(sources: list):
+    """Resolve tất cả redirect URLs song song dùng threading. Sửa in-place."""
+    import threading as _t
+
+    def _resolve_one(s: dict):
+        resolved = _resolve_redirect_url(s["url"])
+        s["display_url"] = resolved
+        # Lấy favicon từ domain của URL đã resolve
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(resolved)
+            domain = f"{parsed.scheme}://{parsed.netloc}"
+            s["favicon"] = f"https://www.google.com/s2/favicons?domain={parsed.netloc}&sz=16"
+            # Nếu chưa có title, dùng domain làm title
+            if not s["title"]:
+                s["title"] = parsed.netloc.replace("www.", "")
+        except Exception:
+            pass
+
+    threads = [_t.Thread(target=_resolve_one, args=(s,), daemon=True) for s in sources]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(timeout=6)   # chờ tối đa 6s mỗi thread
+    # Với những URL chưa resolve xong, dùng original URL
+    for s in sources:
+        if not s["display_url"]:
+            s["display_url"] = s["url"]
 
 
 def _extract_urls_from_text(text: str) -> list:
@@ -607,6 +693,7 @@ def _empty_result() -> dict:
         "site_plan_url":            None,
         "suggested_searches":       [],
         "grounding_urls":           [],
+        "grounding_sources":        [],   # [{title, url, display_url, favicon}]
     }
 
 

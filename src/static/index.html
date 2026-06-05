@@ -968,19 +968,34 @@
     // Grounding sources
     const sourcesCard = document.getElementById('sources-card');
     const sourcesList = document.getElementById('sources-list');
-    if (d.grounding_urls && d.grounding_urls.length > 0) {
-      sourcesList.innerHTML = d.grounding_urls.map((url, i) =>
-        `<div style="display:flex;align-items:center;gap:8px;">
-          <span style="font-size:11px;color:var(--muted);width:20px;flex-shrink:0;">${i+1}.</span>
-          <a href="${url}" target="_blank"
-            style="font-size:12px;color:var(--accent);word-break:break-all;text-decoration:none;flex:1;"
-            onmouseover="this.style.textDecoration='underline'"
-            onmouseout="this.style.textDecoration='none'"
-          >${truncate(url, 90)}</a>
-          <button class="btn btn-copy" style="flex-shrink:0;"
-            onclick="copyText('${url.replace(/'/g,"\\'")}', this)">Copy</button>
-        </div>`
-      ).join('');
+    const sources = d.grounding_sources && d.grounding_sources.length > 0
+      ? d.grounding_sources
+      : (d.grounding_urls || []).map(u => ({ url: u, title: '', display_url: u, favicon: '' }));
+
+    if (sources.length > 0) {
+      sourcesList.innerHTML = sources.map((src, i) => {
+        const displayUrl  = src.display_url || src.url || '';
+        const label       = src.title || _domainLabel(displayUrl || src.url);
+        const favicon     = src.favicon
+          ? `<img src="${src.favicon}" style="width:14px;height:14px;border-radius:2px;flex-shrink:0;" onerror="this.style.display='none'" />`
+          : `<span style="font-size:11px;color:var(--muted);width:14px;flex-shrink:0;">${i+1}.</span>`;
+        const safeUrl     = (displayUrl || src.url || '').replace(/'/g, "\\'");
+        const shortUrl    = _prettyUrl(displayUrl || src.url);
+
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(37,42,56,0.5);">
+          ${favicon}
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escHtml(label)}</div>
+            <a href="${displayUrl || src.url}" target="_blank"
+               style="font-size:11px;color:var(--accent);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;"
+               onmouseover="this.style.textDecoration='underline'"
+               onmouseout="this.style.textDecoration='none'"
+               title="${escHtml(displayUrl || src.url)}">${escHtml(shortUrl)}</a>
+          </div>
+          <button class="btn btn-copy" style="flex-shrink:0;font-size:11px;height:26px;padding:0 8px;"
+            onclick="copyText('${safeUrl}', this)">Copy</button>
+        </div>`;
+      }).join('');
       sourcesCard.style.display = 'block';
     } else {
       sourcesCard.style.display = 'none';
@@ -1027,6 +1042,26 @@
 
   function truncate(s, n) {
     return s.length > n ? s.slice(0, n) + '…' : s;
+  }
+
+  function escHtml(s) {
+    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function _domainLabel(url) {
+    try {
+      const u = new URL(url);
+      return u.hostname.replace(/^www\./, '');
+    } catch { return url; }
+  }
+
+  function _prettyUrl(url) {
+    try {
+      const u = new URL(url);
+      const path = u.pathname.replace(/\/$/, '');
+      const short = u.hostname.replace(/^www\./, '') + (path.length > 40 ? path.slice(0,40)+'…' : path);
+      return short;
+    } catch { return truncate(url, 60); }
   }
 
   function formatHours(oh) {
