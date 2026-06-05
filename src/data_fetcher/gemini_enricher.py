@@ -256,12 +256,14 @@ Rules:
     sources = _extract_grounding_sources(response)
     for s in sources:
         s["step"] = 1   # tag step 1 (hours)
-    urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
+    
+    # Chỉ lấy URL có thật từ Google Search Grounding. Tuyệt đối không trích xuất URL hallucinate từ raw text.
+    urls = [s["url"] for s in sources]
 
     return {
         "opening_hours":        data.get("opening_hours", "") or "",
         "opening_hours_source": _pick_source(urls, data.get("opening_hours_source", ""),
-                                             ["hour", "schedule", "time", "store", "location"]),
+                                             ["hour", "schedule", "time", "store", "location"], block_aggregators=True),
         "is_closed":            bool(data.get("is_closed", False)),
         "closing_date":         data.get("closing_date"),
         "closing_date_source":  "",
@@ -781,21 +783,37 @@ def _extract_urls_from_text(text: str) -> list:
 
 
 def _pick_source(grounding_urls: list, gemini_suggested: str,
-                 keywords: list) -> str:
+                 keywords: list, block_aggregators: bool = False) -> str:
     """
     Chọn URL nguồn tốt nhất:
     1. Tìm trong grounding URLs theo keyword
-    2. Nếu không có, kiểm tra URL Gemini suggested (nếu valid)
-    3. Trả về rỗng
+    2. Nếu không có, lấy URL hợp lệ đầu tiên do Google trả về
+    3. Cuối cùng mới dùng URL Gemini suggest (để tránh hallucination)
     """
-    valid = [u for u in grounding_urls if _is_valid_source_url(u)]
+    aggregator_domains = ("carfax.com", "yelp.com", "yellowpages.com", "foursquare.com", "mapquest.com", "tripadvisor.com")
+    
+    def _is_allowed(u):
+        if not _is_valid_source_url(u):
+            return False
+        if block_aggregators and any(agg in u.lower() for agg in aggregator_domains):
+            return False
+        return True
+
+    valid = [u for u in grounding_urls if _is_allowed(u)]
     # Ưu tiên grounding URL match keyword
     for url in valid:
         if any(kw in url.lower() for kw in keywords):
             return url
-    # Dùng URL Gemini suggest nếu nó có trong grounding list
-    if gemini_suggested and gemini_suggested in grounding_urls:
+            
+    # Nếu không match keyword nhưng có URL hợp lệ từ Google Search, lấy cái đầu tiên
+    # Google Search kết quả đầu tiên thường là website chính thức
+    if valid:
+        return valid[0]
+        
+    # Dùng URL Gemini suggest nếu nó hợp lệ (fallback cuối cùng)
+    if gemini_suggested and _is_allowed(gemini_suggested):
         return gemini_suggested
+        
     return ""
 
 
