@@ -206,7 +206,8 @@ def _step2_dates(client, model_name: str, name: str, address: str,
                  official_website: str = "") -> dict:
     """
     Step 2: Tìm opening date từ news, Yelp, Facebook.
-    Dùng official_website từ Step 1 nếu có để narrow down search.
+    Phase 2a: Google Search để tìm candidate URLs (snippets).
+    Phase 2b: Nếu không tìm được, dùng url_context để đọc chi tiết trang web.
     """
     city_state = _extract_city_state(address)
     extra = f"\nThe official website is: {official_website}" if official_website else ""
@@ -249,7 +250,7 @@ Return ONLY JSON, no markdown.
     data = _parse_json(raw)
     urls = _extract_grounding_urls(response) or _extract_urls_from_text(raw)
 
-    return {
+    result = {
         "opening_date":             data.get("opening_date", "") or "",
         "opening_date_source":      _pick_source(urls, data.get("opening_date_source", ""),
                                                  ["yelp", "facebook", "news", "open", "grand"]),
@@ -261,6 +262,122 @@ Return ONLY JSON, no markdown.
         "closing_date_confidence":  data.get("closing_date_confidence", "none"),
         "suggested_searches":       data.get("suggested_searches", []) or [],
         "grounding_urls":           urls,
+    }
+
+    # ── Phase 2b: Đọc chi tiết trang nếu chưa tìm được ngày ─────────────────
+    if not result["opening_date"] or result["opening_date_confidence"] == "none":
+        logger.info("Step 2a không tìm được OD — chuyển sang Phase 2b (url_context)...")
+        readable_urls = _filter_readable_urls(urls)
+        suggestions   = result["suggested_searches"]
+        if readable_urls or suggestions:
+            try:
+                r2b = _step2b_read_urls(client, model_name, name, address,
+                                        readable_urls, suggestions)
+                if r2b.get("opening_date"):
+                    logger.info(f"Phase 2b tìm được: {r2b['opening_date']} ({r2b['opening_date_confidence']})")
+                    for u in r2b.get("grounding_urls", []):
+                        if u not in result["grounding_urls"]:
+                            result["grounding_urls"].append(u)
+                    result.update({k: v for k, v in r2b.items() if k != "grounding_urls"})
+            except Exception as e:
+                logger.warning(f"Phase 2b lỗi: {e}")
+
+    return result
+
+
+def _filter_readable_urls(urls: list) -> list:
+    """
+    Lọc ra URLs có thể đọc được (Yelp, news, Facebook, v.v.)
+    Loại bỏ Google redirect/grounding proxy URLs.
+    """
+    skip = ("vertexaisearch.cloud.google", "googleapis.com", "google.com/search",
+            "gstatic.com", "googletagmanager")
+    result = []
+    for u in urls:
+        if not any(s in u for s in skip) and _is_valid_source_url(u):
+            result.append(u)
+    return result[:6]   # tối đa 6 URLs để tránh quá tải
+
+
+def _step2b_read_urls(client, model_name: str, name: str, address: str,
+                      urls: list, suggested_searches: list) -> dict:
+    """
+    Phase 2b: Dùng url_context tool để Gemini THỰC SỰ FETCH và đọc nội dung
+    các trang Yelp/news/Facebook — không chỉ đọc snippet từ Google Search.
+    """
+    url_lines    = "\n".join(f"- {u}" for u in urls) if urls else "(không có URL cụ thể)"
+    search_lines = "\n".join(f'- Search: "{s}"' for s in suggested_searches[:3]) \
+                   if suggested_searches else ""
+
+    prompt = f"""
+You are a POI researcher. Open and READ the following web pages to find the GRAND OPENING DATE
+of this specific business location:
+
+Business: {name}
+Address: {address}
+
+Pages to open and read:
+{url_lines}
+
+{f"If pages above don't help, also try:{chr(10)}{search_lines}" if search_lines else ""}
+
+Instructions:
+- Actually OPEN each URL and read the page content
+- On Yelp: look at the date of the FIRST (oldest) review — that's the earliest known open date
+- On news sites: look for "grand opening", "now open", "opened" with a specific date
+- On Facebook: look for grand opening event posts
+- On the business website: look for "established", "founded", "since YYYY"
+
+Return ONLY a JSON object:
+{{
+  "opening_date": "YYYY-MM-DD or YYYY-MM or YYYY or null",
+  "opening_date_confidence": "high|medium|low|none",
+  "opening_date_source": "exact URL where you found the date",
+  "opening_date_evidence": "what you found, e.g. 'Yelp first review by John D. dated March 15, 2019'",
+  "closing_date": null,
+  "closing_date_confidence": "none",
+  "closing_date_source": ""
+}}
+
+Confidence: high=grand opening article, medium=first Yelp/review date, low=indirect, none=not found
+Return ONLY JSON, no markdown.
+""".strip()
+
+    try:
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[
+                    types.Tool(url_context=types.UrlContext()),
+                    types.Tool(google_search=types.GoogleSearch()),
+                ],
+            ),
+        )
+    except Exception as e:
+        # url_context có thể không hỗ trợ trên model fallback — dùng chỉ google_search
+        if "url_context" in str(e).lower() or "unsupported" in str(e).lower() \
+                or "invalid" in str(e).lower():
+            logger.warning(f"url_context không hỗ trợ trên {model_name}, dùng google_search: {e}")
+            response = _call_gemini(client, model_name, prompt)
+        else:
+            raise
+
+    raw = response.text
+    data = _parse_json(raw)
+    found_urls = _extract_grounding_urls(response) or _extract_urls_from_text(raw)
+
+    return {
+        "opening_date":            data.get("opening_date", "") or "",
+        "opening_date_source":     _pick_source(found_urls, data.get("opening_date_source", ""),
+                                                ["yelp", "facebook", "news", "open", "grand"]),
+        "opening_date_confidence": data.get("opening_date_confidence", "none"),
+        "opening_date_evidence":   data.get("opening_date_evidence", "") or "",
+        "closing_date":            data.get("closing_date"),
+        "closing_date_source":     _pick_source(found_urls, data.get("closing_date_source", ""),
+                                                ["clos", "shut", "bankrupt"]),
+        "closing_date_confidence": data.get("closing_date_confidence", "none"),
+        "grounding_urls":          found_urls,
     }
 
 
