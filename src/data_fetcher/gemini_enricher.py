@@ -96,45 +96,20 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         logger.error(f"Step 1 error: {e}")
         yield {"step": 1, "status": "error", "label": f"Step 1 lỗi: {e}"}
 
-    # ── Step 2: Opening Date / Closing Date (dùng key #2) ────────────────────
-    time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 1 → 2
-    yield {"step": 2, "status": "running",
-           "label": "Tìm ngày khai trương và ngày đóng cửa..."}
-    try:
-        s2 = _step2_dates(client2, model_name, name, address,
-                          official_website=result.get("official_website", ""))
-        result.update(s2)
-        # Merge grounding URLs + sources (tag step, dedup by domain)
-        for u in s2.get("grounding_urls", []):
-            if u not in result["grounding_urls"]:
-                result["grounding_urls"].append(u)
-        for s in s2.get("grounding_sources", []):
-            s["step"] = s.get("step", 2)   # tag step 2
-            if not _source_domain_exists(result["grounding_sources"], s):
-                result["grounding_sources"].append(s)
-        yield {"step": 2, "status": "done",
-               "label": "Tìm được ngày",
-               "partial": {k: result[k] for k in
-                           ["opening_date", "opening_date_source",
-                            "opening_date_confidence", "closing_date",
-                            "closing_date_source", "closing_date_confidence",
-                            "suggested_searches"]}}
-    except Exception as e:
-        logger.error(f"Step 2 error: {e}")
-        yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
-
-    # ── Step 2c: Chrome browser — LUÔN chạy khi configured ──────────────────
+    # ── Step 2a: Chrome browser — ƯU TIÊN DUYỆT WEB TRƯỚC ────────────────────
     # Chrome là phương thức chính xác nhất: dùng profile thật, tự search Google+Yelp
-    # Kết quả Chrome sẽ ghi đè kết quả Gemini nếu tìm được ngày
+    chrome_found_date = False
     if browser_fetcher.is_configured():
         yield {"step": 2, "status": "running",
-               "label": "🌐 Chrome browser đang tìm kiếm (Google + Yelp)..."}
+               "label": "🌐 Chrome browser đang tìm kiếm ngày khai trương..."}
         try:
+            # Truyền các source từ Step 1 cho Strategy 1 của Chrome
             r2c = browser_fetcher.browser_find_opening_date(
-                name, address, result["grounding_sources"]
+                name, address, result.get("grounding_sources", [])
             )
             if r2c.get("opening_date"):
-                logger.info(f"Step 2c tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
+                chrome_found_date = True
+                logger.info(f"Chrome tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
                 real_url = r2c.get("opening_date_source", "")
                 if real_url:
                     _up  = urlparse(real_url)
@@ -147,28 +122,60 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
                         "domain":      _dom,
                         "step":        2,
                     }
-                    if not _source_domain_exists(result["grounding_sources"], _src):
-                        result["grounding_sources"].append(_src)
-                        result["grounding_urls"].append(real_url)
-                # Chrome ghi đè kết quả Gemini
+                    if not _source_domain_exists(result.get("grounding_sources", []), _src):
+                        result.setdefault("grounding_sources", []).append(_src)
+                        result.setdefault("grounding_urls", []).append(real_url)
+                
                 result.update({k: v for k, v in r2c.items()
                                if k not in ("grounding_urls", "grounding_sources")})
-            yield {"step": 2, "status": "done",
-                   "label": "🌐 Chrome hoàn tất: tìm được ngày" if r2c.get("opening_date") else "🌐 Chrome: không tìm được ngày",
-                   "partial": {k: result[k] for k in
-                               ["opening_date", "opening_date_source",
-                                "opening_date_confidence", "opening_date_evidence",
-                                "grounding_sources", "grounding_urls"]}}
+                
+                yield {"step": 2, "status": "done",
+                       "label": "🌐 Chrome hoàn tất: tìm được ngày",
+                       "partial": {k: result.get(k) for k in
+                                   ["opening_date", "opening_date_source",
+                                    "opening_date_confidence", "opening_date_evidence",
+                                    "grounding_sources", "grounding_urls"]}}
+            else:
+                yield {"step": 2, "status": "running",
+                       "label": "🌐 Chrome không tìm được ngày, chuyển sang Gemini..."}
         except Exception as e:
-            logger.warning(f"Step 2c lỗi: {e}")
-            yield {"step": 2, "status": "error", "label": f"🌐 Chrome lỗi: {e}"}
+            logger.warning(f"Chrome lỗi: {e}")
+            yield {"step": 2, "status": "running", "label": f"🌐 Chrome lỗi, chuyển sang Gemini..."}
     else:
         # Debug: cho user biết tại sao Chrome không chạy
         cfg_path = browser_fetcher._cfg.get("profile_path", "")
         if not cfg_path:
-            logger.info("Step 2c bỏ qua: chrome.profile_path chưa cấu hình trong config.yaml")
+            logger.info("Chrome bỏ qua: chrome.profile_path chưa cấu hình")
         else:
-            logger.warning(f"Step 2c bỏ qua: profile_path='{cfg_path}' nhưng is_configured()=False")
+            logger.warning(f"Chrome bỏ qua: profile_path='{cfg_path}' nhưng is_configured()=False")
+
+    # ── Step 2b: Opening Date / Closing Date (Gemini Fallback) ───────────────
+    if not chrome_found_date:
+        time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 1 → 2
+        yield {"step": 2, "status": "running",
+               "label": "Gemini đang tìm ngày khai trương..."}
+        try:
+            s2 = _step2_dates(client2, model_name, name, address,
+                              official_website=result.get("official_website", ""))
+            result.update(s2)
+            # Merge grounding URLs + sources (tag step, dedup by domain)
+            for u in s2.get("grounding_urls", []):
+                if u not in result.get("grounding_urls", []):
+                    result.setdefault("grounding_urls", []).append(u)
+            for s in s2.get("grounding_sources", []):
+                s["step"] = s.get("step", 2)   # tag step 2
+                if not _source_domain_exists(result.get("grounding_sources", []), s):
+                    result.setdefault("grounding_sources", []).append(s)
+            yield {"step": 2, "status": "done",
+                   "label": "Gemini tìm được ngày",
+                   "partial": {k: result.get(k) for k in
+                               ["opening_date", "opening_date_source",
+                                "opening_date_confidence", "closing_date",
+                                "closing_date_source", "closing_date_confidence",
+                                "suggested_searches"]}}
+        except Exception as e:
+            logger.error(f"Step 2 error: {e}")
+            yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
 
 
     # ── Step 3: Shopping Center + Site Plan (dùng key #3) ────────────────────
