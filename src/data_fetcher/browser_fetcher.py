@@ -123,14 +123,34 @@ def _create_driver(visible: bool = True):
             opts.add_argument("--disable-dev-shm-usage")
             opts.add_argument("--disable-gpu")
             opts.add_argument("--remote-debugging-port=0")
+            # Tắt "Restore pages?" popup (Chrome didn't shut down correctly)
+            opts.add_argument("--disable-restore-session-state")
+            opts.add_argument("--disable-session-crashed-bubble")
             # Bypass bot detection
             opts.add_argument("--disable-blink-features=AutomationControlled")
             opts.add_experimental_option("excludeSwitches", ["enable-automation"])
             opts.add_experimental_option("useAutomationExtension", False)
+            # Prefs: mark session as exited cleanly → không hỏi restore
+            opts.add_experimental_option("prefs", {
+                "profile.exit_type":       "Normal",
+                "profile.exited_cleanly":  True,
+            })
             return opts
 
         def _patch(driver):
             driver.implicitly_wait(5)
+            # Dismiss "Restore pages?" popup bằng cách navigate về blank
+            # Nếu Chrome đang ở trang restore/crash, điều này sẽ bypass nó
+            try:
+                import time as _t
+                _t.sleep(0.8)  # chờ Chrome ổn định
+                current = driver.current_url or ""
+                # Nếu đang ở trang new-tab hoặc chrome internal → force navigate
+                if not current or "chrome://" in current or current == "data:," or current.endswith("newtab"):
+                    driver.get("about:blank")
+                    _t.sleep(0.3)
+            except Exception:
+                pass
             try:
                 driver.execute_script(
                     "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
