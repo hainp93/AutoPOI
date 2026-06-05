@@ -243,7 +243,8 @@ Return ONLY a JSON object:
 
 Rules:
 - opening_hours format: days as mo/tu/we/th/fr/sa/su, ranges like mo-fr, 24h time HH:MM.
-- Prefer the official website or Google Business listing over aggregators.
+- STRICT RULE: Do NOT use aggregator or review sites (e.g., carfax.com, yelp.com, yellowpages.com, foursquare.com, mapquest.com) as the `opening_hours_source` because QA cannot access them (403 Forbidden).
+- If you find the hours on an aggregator, you MUST find the official website or Facebook page and return that as the source instead. If no official site exists, return the Google Maps link.
 - If this specific location is permanently closed, set is_closed=true.
 - official_website: prefer the location-specific page (e.g. chain.com/stores/city-state) over homepage.
 - Return ONLY JSON, no markdown.
