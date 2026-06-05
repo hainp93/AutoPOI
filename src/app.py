@@ -63,25 +63,27 @@ else:
     sys.exit(1)
 
 # ── Setup Chrome browser (Step 2c — primary method for Opening Date) ──────────
-chrome_cfg  = config.get("chrome", {})
-chrome_path = chrome_cfg.get("profile_path", "")   # "auto" → tự detect, "" → tắt
-print(f"[AutoPOI] Chrome config: profile_path='{chrome_path}', dir='{chrome_cfg.get('profile_dir','Default')}'")
-if chrome_path:
-    browser_fetcher.setup_browser(
-        profile_path=chrome_path,
-        profile_dir=chrome_cfg.get("profile_dir", "Default"),
-        offscreen_x=chrome_cfg.get("offscreen_x", -3000),
-        page_wait=chrome_cfg.get("page_wait", 4),
-    )
-    if browser_fetcher.is_configured():
-        resolved = browser_fetcher._cfg["profile_path"]
-        print(f"[AutoPOI] ✓ Chrome browser READY: '{resolved}' / '{chrome_cfg.get('profile_dir','Default')}'")
-        print(f"[AutoPOI]   Step 2c sẽ tự động search Google + Yelp cho mỗi POI")
-    else:
-        print(f"[AutoPOI] ✗ Chrome browser DISABLED: profile_path='{chrome_path}' không tồn tại")
-        print(f"[AutoPOI]   Kiểm tra lại đường dẫn Chrome profile trong config.yaml")
+chrome_cfg   = config.get("chrome", {})
+# Nếu không có section chrome HOẶC profile_path rỗng → tự động dùng "auto"
+chrome_path  = chrome_cfg.get("profile_path", "auto") or "auto"
+chrome_dir   = chrome_cfg.get("profile_dir",  "Default")
+offscreen_x  = chrome_cfg.get("offscreen_x",  -3000)
+page_wait    = chrome_cfg.get("page_wait",    4)
+
+print(f"[AutoPOI] Chrome config: profile_path='{chrome_path}', dir='{chrome_dir}'")
+browser_fetcher.setup_browser(
+    profile_path=chrome_path,
+    profile_dir=chrome_dir,
+    offscreen_x=offscreen_x,
+    page_wait=page_wait,
+)
+if browser_fetcher.is_configured():
+    resolved = browser_fetcher._cfg["profile_path"]
+    print(f"[AutoPOI] ✓ Chrome browser READY: '{resolved}' / '{chrome_dir}'")
+    print(f"[AutoPOI]   Step 2c sẽ tự động search Google + Yelp cho mỗi POI")
 else:
-    print("[AutoPOI]   Chrome browser: không cấu hình (bỏ qua Step 2c)")
+    print(f"[AutoPOI] ✗ Chrome browser DISABLED: không tìm thấy Chrome profile")
+    print(f"[AutoPOI]   Kiểm tra Chrome đã được cài chưa, hoặc đặt chrome.profile_path trong config.yaml")
 
 
 app = FastAPI(title="AutoPOI", version="2.0.0")
