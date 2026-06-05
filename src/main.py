@@ -27,6 +27,7 @@ from src.data_fetcher.geocoder import geocode, build_ve_url, build_gm_url, build
 from src.data_fetcher.gemini_enricher import (
     setup_gemini, setup_gemini_multi, enrich_poi, format_hours_for_display
 )
+from src.data_fetcher import browser_fetcher
 
 console = Console()
 
@@ -226,6 +227,26 @@ def main():
         console.print("[red]❌ Chưa cấu hình Gemini API key trong config.yaml![/red]")
         console.print("   Điền [cyan]api_key[/cyan] (1 key) hoặc [cyan]api_keys[/cyan] (list 3 key) trong section [gemini]")
         sys.exit(1)
+
+    # Setup Chrome browser (optional — dùng cho Step 2c)
+    chrome_cfg = config.get("chrome", {})
+    chrome_path = chrome_cfg.get("profile_path", "")
+    if chrome_path and chrome_path not in ("auto", ""):
+        chrome_dir = chrome_cfg.get("profile_dir", "Default")
+        browser_fetcher.setup_browser(
+            profile_path=chrome_path,
+            profile_dir=chrome_dir,
+            offscreen_x=chrome_cfg.get("offscreen_x", -3000),
+            page_wait=chrome_cfg.get("page_wait", 3),
+        )
+        console.print(f"[green]✓ Chrome browser:[/green] profile '{chrome_dir}' (off-screen, Step 2c fallback)")
+    elif chrome_path == "auto":
+        import os
+        auto_path = f"C:\\Users\\{os.getenv('USERNAME','')}\\AppData\\Local\\Google\\Chrome\\User Data"
+        browser_fetcher.setup_browser(profile_path=auto_path)
+        console.print(f"[green]✓ Chrome browser (auto):[/green] {auto_path}")
+    else:
+        console.print("[dim]  Chrome browser: không cấu hình (bỏ qua Step 2c)[/dim]")
 
     # Single mode hoặc interactive mode
     if args.name and args.address:

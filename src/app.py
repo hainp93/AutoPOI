@@ -25,6 +25,7 @@ from src.data_fetcher.geocoder import geocode, build_ve_url, build_gm_url, build
 from src.data_fetcher.gemini_enricher import (
     setup_gemini, setup_gemini_multi, enrich_poi, enrich_poi_stream
 )
+from src.data_fetcher import browser_fetcher
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -61,7 +62,22 @@ else:
     print("        Điền api_key (1 key) hoặc api_keys (list 3 key) trong section [gemini]")
     sys.exit(1)
 
-# ── FastAPI app ───────────────────────────────────────────────────────────────
+# ── Setup Chrome browser (optional, Step 2c fallback) ───────────────────────────
+chrome_cfg  = config.get("chrome", {})
+chrome_path = chrome_cfg.get("profile_path", "")
+if chrome_path == "auto":
+    import os as _os
+    chrome_path = f"C:\\Users\\{_os.getenv('USERNAME','')}\\AppData\\Local\\Google\\Chrome\\User Data"
+if chrome_path:
+    browser_fetcher.setup_browser(
+        profile_path=chrome_path,
+        profile_dir=chrome_cfg.get("profile_dir", "Default"),
+        offscreen_x=chrome_cfg.get("offscreen_x", -3000),
+        page_wait=chrome_cfg.get("page_wait", 3),
+    )
+    print(f"[AutoPOI] Chrome browser: profile '{chrome_cfg.get('profile_dir','Default')}' (off-screen)")
+
+# ── FastAPI app ─────────────────────────────────────────────────────────────────
 app = FastAPI(title="AutoPOI", version="2.0.0")
 
 STATIC_DIR = Path(__file__).parent / "static"

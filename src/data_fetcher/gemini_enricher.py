@@ -15,6 +15,7 @@ from typing import Iterator
 from urllib.parse import urlparse
 from google import genai
 from google.genai import types
+from data_fetcher import browser_fetcher
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +298,37 @@ Return ONLY JSON, no markdown.
                                    if k not in ("grounding_urls", "grounding_sources")})
             except Exception as e:
                 logger.warning(f"Phase 2b lỗi: {e}")
+
+    # ── Phase 2c: Real Chrome browser — dùng profile thật ─────────────────────
+    if (not result["opening_date"] or result["opening_date_confidence"] == "none") \
+            and browser_fetcher.is_configured():
+        logger.info("Phase 2b không đủ — chuyển sang Phase 2c (real Chrome browser)...")
+        try:
+            r2c = browser_fetcher.browser_find_opening_date(
+                name, address, result["grounding_sources"]
+            )
+            if r2c.get("opening_date"):
+                logger.info(f"Phase 2c tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
+                # Thêm source mới vào grounding_sources để hiển thị URL thực
+                real_url = r2c.get("opening_date_source", "")
+                if real_url and not any(x["url"] == real_url
+                                        for x in result["grounding_sources"]):
+                    from urllib.parse import urlparse as _up
+                    parsed  = _up(real_url)
+                    domain  = parsed.netloc.replace("www.", "")
+                    favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16"
+                    result["grounding_sources"].append({
+                        "url":         real_url,
+                        "title":       r2c.get("opening_date_evidence", domain),
+                        "display_url": real_url,
+                        "favicon":     favicon,
+                        "domain":      domain,
+                    })
+                    result["grounding_urls"].append(real_url)
+                result.update({k: v for k, v in r2c.items()
+                               if k not in ("grounding_urls", "grounding_sources")})
+        except Exception as e:
+            logger.warning(f"Phase 2c lỗi: {e}")
 
     return result
 
