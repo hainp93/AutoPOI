@@ -104,12 +104,13 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         s2 = _step2_dates(client2, model_name, name, address,
                           official_website=result.get("official_website", ""))
         result.update(s2)
-        # Merge grounding URLs + sources
+        # Merge grounding URLs + sources (tag step, dedup by domain)
         for u in s2.get("grounding_urls", []):
             if u not in result["grounding_urls"]:
                 result["grounding_urls"].append(u)
         for s in s2.get("grounding_sources", []):
-            if not any(x["url"] == s["url"] for x in result["grounding_sources"]):
+            s["step"] = s.get("step", 2)   # tag step 2
+            if not _source_domain_exists(result["grounding_sources"], s):
                 result["grounding_sources"].append(s)
         yield {"step": 2, "status": "done",
                "label": "Tìm được ngày",
@@ -133,7 +134,8 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
             if u not in result["grounding_urls"]:
                 result["grounding_urls"].append(u)
         for s in s3.get("grounding_sources", []):
-            if not any(x["url"] == s["url"] for x in result["grounding_sources"]):
+            s["step"] = s.get("step", 3)   # tag step 3
+            if not _source_domain_exists(result["grounding_sources"], s):
                 result["grounding_sources"].append(s)
         yield {"step": 3, "status": "done",
                "label": "Hoàn tất",
@@ -196,6 +198,8 @@ Rules:
     raw = response.text
     data = _parse_json(raw)
     sources = _extract_grounding_sources(response)
+    for s in sources:
+        s["step"] = 1   # tag step 1 (hours)
     urls = [s["url"] for s in sources] or _extract_urls_from_text(raw)
 
     return {
@@ -549,6 +553,24 @@ def _parse_json(text: str) -> dict:
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}")
         return {}
+
+
+def _source_domain_exists(sources: list, new_source: dict) -> bool:
+    """
+    Kiểm tra xem đã có source cùng domain chưa.
+    Dùng để deduplicate: không hiển thị 2 link cùng trang (vioc.com × 2).
+    Ngoại lệ: cho phép cùng domain nếu step khác nhau (hours vs date source).
+    """
+    new_domain = new_source.get("domain", "")
+    new_step   = new_source.get("step", 0)
+    new_url    = new_source.get("url", "")
+
+    for s in sources:
+        if s.get("url") == new_url:
+            return True   # Exact URL match → dedup
+        if new_domain and s.get("domain") == new_domain and s.get("step") == new_step:
+            return True   # Same domain + same step → dedup
+    return False
 
 
 # URL blocklist — loại bỏ namespace/CDN URLs vô nghĩa
