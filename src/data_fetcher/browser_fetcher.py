@@ -52,41 +52,60 @@ def _create_driver():
     - Profile người dùng thật (cookies, logins)
     - Window đẩy ra ngoài màn hình (offscreen_x, -3000 mặc định)
     - Tắt automation flags để bypass bot detection
+
+    Nếu Chrome đang mở cùng profile → thử lại không có profile
+    (vẫn dùng Chrome thật nhưng không có cookies, tốt hơn headless).
     """
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
 
-        opts = Options()
+        def _build_opts(with_profile: bool) -> Options:
+            opts = Options()
+            if with_profile and _cfg["profile_path"]:
+                opts.add_argument(f'--user-data-dir={_cfg["profile_path"]}')
+                opts.add_argument(f'--profile-directory={_cfg["profile_dir"]}')
+            opts.add_argument(f'--window-position={_cfg["offscreen_x"]},0')
+            opts.add_argument("--window-size=1280,900")
+            opts.add_argument("--no-first-run")
+            opts.add_argument("--no-default-browser-check")
+            opts.add_argument("--disable-notifications")
+            opts.add_argument("--disable-popup-blocking")
+            opts.add_argument("--disable-extensions")
+            opts.add_argument("--no-sandbox")
+            opts.add_argument("--disable-dev-shm-usage")
+            # Bypass bot detection
+            opts.add_argument("--disable-blink-features=AutomationControlled")
+            opts.add_experimental_option("excludeSwitches", ["enable-automation"])
+            opts.add_experimental_option("useAutomationExtension", False)
+            return opts
 
-        # Dùng profile thật
-        if _cfg["profile_path"]:
-            opts.add_argument(f'--user-data-dir={_cfg["profile_path"]}')
-            opts.add_argument(f'--profile-directory={_cfg["profile_dir"]}')
+        # Thử 1: dùng profile thật (có cookies)
+        try:
+            driver = webdriver.Chrome(options=_build_opts(with_profile=True))
+            driver.implicitly_wait(5)
+            driver.execute_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            logger.info(f"Chrome started with profile '{_cfg['profile_dir']}' (off-screen)")
+            return driver
+        except Exception as e:
+            err = str(e).lower()
+            if "user data directory is already in use" in err or "already in use" in err:
+                logger.warning(
+                    f"Chrome profile đang được dùng bởi Chrome đang mở → "
+                    f"thử lại không có profile (không có cookies)."
+                )
+            else:
+                raise  # Lỗi khác thì raise luôn
 
-        # Đẩy window ra ngoài màn hình, ẩn khỏi người dùng
-        opts.add_argument(f'--window-position={_cfg["offscreen_x"]},0')
-        opts.add_argument("--window-size=1280,900")
-
-        # Setup cơ bản
-        opts.add_argument("--no-first-run")
-        opts.add_argument("--no-default-browser-check")
-        opts.add_argument("--disable-notifications")
-        opts.add_argument("--disable-popup-blocking")
-        opts.add_argument("--disable-extensions")
-
-        # Bypass bot detection
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_experimental_option("excludeSwitches", ["enable-automation"])
-        opts.add_experimental_option("useAutomationExtension", False)
-
-        driver = webdriver.Chrome(options=opts)
-
-        # Thêm stealth: ẩn navigator.webdriver
+        # Thử 2: không có profile (Chrome đang mở conflict)
+        driver = webdriver.Chrome(options=_build_opts(with_profile=False))
+        driver.implicitly_wait(5)
         driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
-        logger.info("Chrome browser started (off-screen)")
+        logger.info("Chrome started WITHOUT profile (fallback, no cookies)")
         return driver
 
     except ImportError:
