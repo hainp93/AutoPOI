@@ -542,11 +542,13 @@ def _extract_grounding_urls(response) -> list:
 
 def _extract_grounding_sources(response) -> list:
     """
-    Trích xuất thông tin nguồn từ grounding metadata:
-    - title: tên trang thực (từ Gemini metadata)
-    - url: redirect URL (vertexaisearch...) — hoạt động khi click trên trình duyệt
-    - display_url: giống url (không resolve server-side, trình duyệt sẽ follow redirect)
-    - favicon: infer từ title hoặc URI
+    Trích xuất thông tin nguồn từ grounding_chunks[].web — CHỈ dùng Path này.
+
+    Lý do chỉ dùng grounding_chunks:
+    - URI là Google redirect (vertexaisearch.cloud.google.com/...) — luôn hoạt động khi user click
+    - title là tên trang thực do Gemini cung cấp (Yelp, Carfax, Facebook...)
+    - Không dùng search_entry_point.rendered_content vì cho URL thẳng (carfax.com/...)
+      hay bị 403 khi click trực tiếp vì thiếu referrer/cookie/session.
     """
     seen_urls = set()
     sources = []
@@ -555,7 +557,6 @@ def _extract_grounding_sources(response) -> list:
             meta = getattr(candidate, "grounding_metadata", None)
             if not meta:
                 continue
-            # Path 1: grounding_chunks[].web — có title thực của trang web
             for chunk in (getattr(meta, "grounding_chunks", None) or []):
                 web = getattr(chunk, "web", None)
                 if not web:
@@ -567,25 +568,12 @@ def _extract_grounding_sources(response) -> list:
                     domain  = _infer_domain_from_title(title) or _domain_from_uri(uri)
                     favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16" if domain else ""
                     sources.append({
-                        "url":         uri,     # redirect URL (hoạt động khi user click trên browser)
-                        "title":       title,   # tên trang thực (Yelp, Facebook, news...)
-                        "display_url": uri,     # hiển thị luôn URI nhưng dùng title làm label
+                        "url":         uri,
+                        "title":       title,
+                        "display_url": uri,
                         "favicon":     favicon,
                         "domain":      domain,
                     })
-            # Path 2: search_entry_point rendered_content (fallback, không có title)
-            sep = getattr(meta, "search_entry_point", None)
-            if sep:
-                content = getattr(sep, "rendered_content", "") or ""
-                for u in re.findall(r'https?://[^\s"<>]+', content):
-                    if u not in seen_urls and _is_valid_source_url(u):
-                        seen_urls.add(u)
-                        domain  = _domain_from_uri(u)
-                        favicon = f"https://www.google.com/s2/favicons?domain={domain}&sz=16" if domain else ""
-                        sources.append({
-                            "url": u, "title": domain or u,
-                            "display_url": u, "favicon": favicon, "domain": domain,
-                        })
             queries = getattr(meta, "web_search_queries", []) or []
             if queries:
                 logger.debug(f"Search queries: {queries}")
