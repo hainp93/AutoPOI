@@ -62,20 +62,28 @@ else:
     print("        Điền api_key (1 key) hoặc api_keys (list 3 key) trong section [gemini]")
     sys.exit(1)
 
-# ── Setup Chrome browser (optional, Step 2c fallback) ───────────────────────────
+# ── Setup Chrome browser (Step 2c — primary method for Opening Date) ──────────
 chrome_cfg  = config.get("chrome", {})
 chrome_path = chrome_cfg.get("profile_path", "")   # "auto" → tự detect, "" → tắt
+print(f"[AutoPOI] Chrome config: profile_path='{chrome_path}', dir='{chrome_cfg.get('profile_dir','Default')}'")
 if chrome_path:
     browser_fetcher.setup_browser(
         profile_path=chrome_path,
         profile_dir=chrome_cfg.get("profile_dir", "Default"),
         offscreen_x=chrome_cfg.get("offscreen_x", -3000),
-        page_wait=chrome_cfg.get("page_wait", 3),
+        page_wait=chrome_cfg.get("page_wait", 4),
     )
     if browser_fetcher.is_configured():
-        print(f"[AutoPOI] Chrome browser: profile '{chrome_cfg.get('profile_dir','Default')}' (off-screen, Step 2c)")
+        resolved = browser_fetcher._cfg["profile_path"]
+        print(f"[AutoPOI] ✓ Chrome browser READY: '{resolved}' / '{chrome_cfg.get('profile_dir','Default')}'")
+        print(f"[AutoPOI]   Step 2c sẽ tự động search Google + Yelp cho mỗi POI")
     else:
-        print("[AutoPOI] Chrome browser: không tìm thấy profile — Step 2c bị tắt")
+        print(f"[AutoPOI] ✗ Chrome browser DISABLED: profile_path='{chrome_path}' không tồn tại")
+        print(f"[AutoPOI]   Kiểm tra lại đường dẫn Chrome profile trong config.yaml")
+else:
+    print("[AutoPOI]   Chrome browser: không cấu hình (bỏ qua Step 2c)")
+
+
 app = FastAPI(title="AutoPOI", version="2.0.0")
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -102,6 +110,26 @@ def _build_geo_info(name: str, address: str, geo: dict | None) -> dict:
         "lon": None,
         "ve_url": None,
         "gm_url": build_gm_search_url(name, address),
+    }
+
+
+@app.get("/debug/chrome-status")
+async def chrome_status():
+    """Kiểm tra trạng thái Chrome browser config cho Step 2c."""
+    from pathlib import Path as _Path
+    cfg = browser_fetcher._cfg
+    profile_path = cfg.get("profile_path", "")
+    return {
+        "configured":    browser_fetcher.is_configured(),
+        "profile_path":  profile_path,
+        "profile_dir":   cfg.get("profile_dir", ""),
+        "profile_exists": _Path(profile_path).exists() if profile_path else False,
+        "offscreen_x":   cfg.get("offscreen_x", -3000),
+        "page_wait":     cfg.get("page_wait", 4),
+        "message": (
+            "✓ Chrome sẵn sàng — Step 2c sẽ chạy với mỗi POI" if browser_fetcher.is_configured()
+            else f"✗ Chrome chưa ready — kiểm tra profile_path trong config.yaml"
+        )
     }
 
 

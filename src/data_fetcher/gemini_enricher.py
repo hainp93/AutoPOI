@@ -123,12 +123,12 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         logger.error(f"Step 2 error: {e}")
         yield {"step": 2, "status": "error", "label": f"Step 2 lỗi: {e}"}
 
-    # ── Step 2c: Chrome browser — tự tìm kiếm nếu OD vẫn chưa có ────────────
-    _od_missing = (not result.get("opening_date") or
-                   result.get("opening_date_confidence") in ("none", "low"))
-    if _od_missing and browser_fetcher.is_configured():
+    # ── Step 2c: Chrome browser — LUÔN chạy khi configured ──────────────────
+    # Chrome là phương thức chính xác nhất: dùng profile thật, tự search Google+Yelp
+    # Kết quả Chrome sẽ ghi đè kết quả Gemini nếu tìm được ngày
+    if browser_fetcher.is_configured():
         yield {"step": 2, "status": "running",
-               "label": "🌐 Chrome browser đang tìm kiếm ngày khai trương..."}
+               "label": "🌐 Chrome browser đang tìm kiếm (Google + Yelp)..."}
         try:
             r2c = browser_fetcher.browser_find_opening_date(
                 name, address, result["grounding_sources"]
@@ -137,7 +137,7 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
                 logger.info(f"Step 2c tìm được: {r2c['opening_date']} ({r2c.get('opening_date_confidence')})")
                 real_url = r2c.get("opening_date_source", "")
                 if real_url:
-                    _up = urlparse(real_url)
+                    _up  = urlparse(real_url)
                     _dom = _up.netloc.replace("www.", "")
                     _src = {
                         "url":         real_url,
@@ -150,10 +150,11 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
                     if not _source_domain_exists(result["grounding_sources"], _src):
                         result["grounding_sources"].append(_src)
                         result["grounding_urls"].append(real_url)
+                # Chrome ghi đè kết quả Gemini
                 result.update({k: v for k, v in r2c.items()
                                if k not in ("grounding_urls", "grounding_sources")})
             yield {"step": 2, "status": "done",
-                   "label": "🌐 Chrome browser hoàn tất" if r2c.get("opening_date") else "🌐 Chrome: không tìm được ngày",
+                   "label": "🌐 Chrome hoàn tất: tìm được ngày" if r2c.get("opening_date") else "🌐 Chrome: không tìm được ngày",
                    "partial": {k: result[k] for k in
                                ["opening_date", "opening_date_source",
                                 "opening_date_confidence", "opening_date_evidence",
@@ -161,6 +162,14 @@ def enrich_poi_stream(model_config, name: str, address: str) -> Iterator[dict]:
         except Exception as e:
             logger.warning(f"Step 2c lỗi: {e}")
             yield {"step": 2, "status": "error", "label": f"🌐 Chrome lỗi: {e}"}
+    else:
+        # Debug: cho user biết tại sao Chrome không chạy
+        cfg_path = browser_fetcher._cfg.get("profile_path", "")
+        if not cfg_path:
+            logger.info("Step 2c bỏ qua: chrome.profile_path chưa cấu hình trong config.yaml")
+        else:
+            logger.warning(f"Step 2c bỏ qua: profile_path='{cfg_path}' nhưng is_configured()=False")
+
 
     # ── Step 3: Shopping Center + Site Plan (dùng key #3) ────────────────────
     time.sleep(2)  # Delay nhỏ tránh RPM limit giữa bước 2 → 3
